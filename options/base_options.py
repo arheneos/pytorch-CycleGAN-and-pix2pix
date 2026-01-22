@@ -33,7 +33,7 @@ class BaseOptions:
         parser.add_argument("--netG", type=str, default="resnet_9blocks", help="specify generator architecture [resnet_9blocks | resnet_6blocks | unet_256 | unet_128]")
         parser.add_argument("--n_layers_D", type=int, default=3, help="only used if netD==n_layers")
         parser.add_argument("--norm", type=str, default="instance", help="instance normalization or batch normalization [instance | batch | none | syncbatch]")
-        parser.add_argument("--init_type", type=str, default="kaiming", help="network initialization [normal | xavier | kaiming | orthogonal]")
+        parser.add_argument("--init_type", type=str, default="normal", help="network initialization [normal | xavier | kaiming | orthogonal]")
         parser.add_argument("--init_gain", type=float, default=0.02, help="scaling factor for normal, xavier and orthogonal.")
         parser.add_argument("--no_dropout", action="store_true", help="no dropout for the generator")
         # dataset parameters
@@ -41,7 +41,7 @@ class BaseOptions:
         parser.add_argument("--direction", type=str, default="AtoB", help="AtoB or BtoA")
         parser.add_argument("--serial_batches", action="store_true", help="if true, takes images in order to make batches, otherwise takes them randomly")
         parser.add_argument("--num_threads", default=4, type=int, help="# threads for loading data")
-        parser.add_argument("--batch_size", type=int, default=128, help="input batch size")
+        parser.add_argument("--batch_size", type=int, default=8, help="input batch size")
         parser.add_argument("--load_size", type=int, default=120, help="scale images to this size")
         parser.add_argument("--crop_size", type=int, default=64, help="then crop to this size")
         parser.add_argument("--max_dataset_size", type=int, default=float("inf"), help="Maximum number of samples allowed per dataset. If the dataset directory contains more than max_dataset_size, only a subset is loaded.")
