@@ -183,14 +183,34 @@ class CycleGANModel(BaseModel):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
         # forward
         self.forward()  # compute fake images and reconstruction images.
-        # G_A and G_B
-        self.set_requires_grad([self.netD_A, self.netD_B], False)  # Ds require no gradients when optimizing Gs
-        self.optimizer_G.zero_grad()  # set G_A and G_B's gradients to zero
-        self.backward_G()  # calculate gradients for G_A and G_B
-        self.optimizer_G.step()  # update G_A and G_B's weights
-        # D_A and D_B
+
+        # ------------------
+        # Optimize Generators
+        # ------------------
+        self.set_requires_grad([self.netD_A, self.netD_B], False)
+        self.optimizer_G.zero_grad()
+
+        self.backward_G()
+
+        # NaN / Inf check for generator loss
+        if torch.isnan(self.loss_G).any() or torch.isinf(self.loss_G).any():
+            print("[WARN] NaN or Inf detected in Generator loss. Skipping G update.")
+        else:
+            self.optimizer_G.step()
+
+        # ------------------
+        # Optimize Discriminators
+        # ------------------
         self.set_requires_grad([self.netD_A, self.netD_B], True)
-        self.optimizer_D.zero_grad()  # set D_A and D_B's gradients to zero
-        self.backward_D_A()  # calculate gradients for D_A
-        self.backward_D_B()  # calculate graidents for D_B
-        self.optimizer_D.step()  # update D_A and D_B's weights
+        self.optimizer_D.zero_grad()
+
+        self.backward_D_A()
+        self.backward_D_B()
+
+        loss_D = self.loss_D_A + self.loss_D_B
+
+        # NaN / Inf check for discriminator loss
+        if torch.isnan(loss_D).any() or torch.isinf(loss_D).any():
+            print("[WARN] NaN or Inf detected in Discriminator loss. Skipping D update.")
+        else:
+            self.optimizer_D.step()
