@@ -389,6 +389,11 @@ class SelfAttention2d(nn.Module):
         self.phi = nn.Conv2d(c, c_, 1, bias=False)  # key
         self.g = nn.Conv2d(c, c_, 1, bias=False)  # value
         self.out = nn.Conv2d(c_, c, 1, bias=False)
+        self.theta.apply(init_weights_kaiming)
+        self.phi.apply(init_weights_kaiming)
+        self.g.apply(init_weights_kaiming)
+        self.out.apply(init_weights_kaiming)
+
         self.gamma = nn.Parameter(torch.tensor(0.0))  # residual gate
 
     def forward(self, x):
@@ -410,6 +415,7 @@ class AttnBlock(nn.Module):
             nn.InstanceNorm2d(dim),
             nn.LeakyReLU(0.2, inplace=True),
         )
+        self.pre.apply(init_weights_kaiming)
         self.attn = SelfAttention2d(dim)
 
     def forward(self, x):
@@ -461,6 +467,7 @@ class AttnGenerator(nn.Module):
                 nn.InstanceNorm2d(dim),
             ) for _ in range(n_res)
         ])
+        self.body.apply(init_weights_kaiming)
 
         Attn = AttnBlock
         self.attn_blocks = nn.ModuleList([Attn(dim) for _ in range(n_attn)])
@@ -480,6 +487,8 @@ class AttnGenerator(nn.Module):
             nn.InstanceNorm2d(dim2),
             nn.LeakyReLU(0.2, inplace=True),
         )
+        self.fuse1.apply(init_weights_kaiming)
+        self.up1.apply(init_weights_kaiming)
 
         # up2: dim2 -> dim1, then concat enc0(dim1) => dim1+dim1
         self.up2 = nn.Sequential(
@@ -488,11 +497,14 @@ class AttnGenerator(nn.Module):
             nn.InstanceNorm2d(dim1),
             nn.LeakyReLU(0.2, inplace=True),
         )
+        self.up2.apply(init_weights_kaiming)
+
         self.fuse2 = nn.Sequential(
             nn.Conv2d(dim1 + dim1, dim1, 3, padding=1, padding_mode='replicate'),
             nn.InstanceNorm2d(dim1),
             nn.LeakyReLU(0.2, inplace=True),
         )
+        self.fuse2.apply(init_weights_kaiming)
 
         # ----------------
         # Final: concat with input image (like you already do)
