@@ -451,18 +451,6 @@ class AttnGenerator(nn.Module):
         # Body: residual blocks (n_res) + attention blocks
         # ----------------
         dim = dim3
-        n_res = max(0, n_blocks - n_attn)
-
-        self.body = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(dim, dim, 3, padding=1, padding_mode='replicate'),
-                nn.InstanceNorm2d(dim),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Conv2d(dim, dim, 3, padding=1, padding_mode='replicate'),
-                nn.InstanceNorm2d(dim),
-            ) for _ in range(n_res)
-        ])
-
         Attn = AttnBlock
         self.attn_blocks = nn.ModuleList([Attn(dim) for _ in range(n_attn)])
 
@@ -511,11 +499,6 @@ class AttnGenerator(nn.Module):
         e0 = self.enc0(x)  # (B, dim1, H,   W)
         e1 = self.enc1(e0)  # (B, dim2, H/2, W/2)
         x = self.enc2(e1)  # (B, dim3, H/4, W/4)
-
-        # Residual body
-        for block in self.body:
-            x = x + block(x)
-
         # Attention
         for attn in self.attn_blocks:
             x = attn(x)
