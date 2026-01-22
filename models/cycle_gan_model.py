@@ -193,8 +193,8 @@ class CycleGANModel(BaseModel):
 
         # [추가] Generator Gradient Clipping
         # self.netG_A와 self.netG_B의 모든 파라미터를 대상으로 클리핑합니다.
-        torch.nn.utils.clip_grad_norm_(self.netG_A.parameters(), max_norm=0.1)
-        torch.nn.utils.clip_grad_norm_(self.netG_B.parameters(), max_norm=0.1)
+        torch.nn.utils.clip_grad_norm_(self.netG_A.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.netG_B.parameters(), max_norm=1.0)
 
         self.optimizer_G.step()
 
