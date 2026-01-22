@@ -806,12 +806,12 @@ class PixelDiscriminator(nn.Module):
             use_bias = norm_layer == nn.InstanceNorm2d
 
         self.net = [
-            nn.Conv2d(input_nc, ndf, kernel_size=1, stride=1, padding=0),
+            nn.Conv2d(input_nc, ndf, kernel_size=7, stride=1, padding='same'),
             nn.LeakyReLU(0.2, True),
-            nn.Conv2d(ndf, ndf * 2, kernel_size=1, stride=1, padding=0, bias=use_bias),
+            nn.Conv2d(ndf, ndf * 2, kernel_size=7, stride=1, padding='same', bias=use_bias),
             norm_layer(ndf * 2),
             nn.LeakyReLU(0.2, True),
-            nn.Conv2d(ndf * 2, 1, kernel_size=1, stride=1, padding=0, bias=use_bias),
+            nn.Conv2d(ndf * 2, 1, kernel_size=3, padding='same', stride=1, bias=use_bias),
         ]
 
         self.net = nn.Sequential(*self.net)
