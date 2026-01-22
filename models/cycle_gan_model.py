@@ -197,6 +197,14 @@ class CycleGANModel(BaseModel):
         if res == -1:
             self.optimizer_G.zero_grad()
             self.optimizer_D.zero_grad()
+            self.fake_A = None
+            self.fake_B = None
+            self.rec_A = None
+            self.rec_B = None
+            self.idt_A = None
+            self.idt_B = None
+            self.loss_G = None
+            torch.cuda.empty_cache()
             return
         self.optimizer_G.step()  # update G_A and G_B's weights
         # D_A and D_B
