@@ -105,12 +105,11 @@ class Visualizer:
         if self.use_wandb:
             ims_dict = {}
             for label, image in visuals.items():
-                image_numpy = util.tensor2im(image)  # float, 예: [0,1] 또는 [-1,1]
+                image_numpy = util.tensor2im(image)
                 img = image_numpy.astype(np.float32)
                 img_gray = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
                 img_magma = cv2.applyColorMap(img_gray, cv2.COLORMAP_MAGMA)
                 img_magma = cv2.cvtColor(img_magma, cv2.COLOR_BGR2RGB)
-
                 wandb_image = wandb.Image(
                     img_magma,
                     caption=f"{label} - Step {total_iters}"
@@ -123,8 +122,12 @@ class Visualizer:
             # save images to the disk
             for label, image in visuals.items():
                 image_numpy = util.tensor2im(image)
+                img = image_numpy.astype(np.float32)
+                img_gray = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                img_magma = cv2.applyColorMap(img_gray, cv2.COLORMAP_MAGMA)
+                img_magma = cv2.cvtColor(img_magma, cv2.COLOR_BGR2RGB)
                 img_path = self.img_dir / f"epoch{epoch:03d}_{label}.png"
-                util.save_image(image_numpy, img_path)
+                util.save_image(img_magma, img_path)
 
             # update website
             webpage = html.HTML(self.web_dir, f"Experiment name = {self.name}", refresh=1)
