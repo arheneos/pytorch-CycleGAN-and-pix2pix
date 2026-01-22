@@ -386,41 +386,21 @@ class SelfAttention2d(nn.Module):
         super().__init__()
         c = in_channels
         c_ = max(1, c // reduction)
-
-        self.theta = nn.Conv2d(c, c_, 1, bias=False)
-        self.phi = nn.Conv2d(c, c_, 1, bias=False)
-        self.g = nn.Conv2d(c, c_, 1, bias=False)
+        self.theta = nn.Conv2d(c, c_, 1, bias=False)  # query
+        self.phi = nn.Conv2d(c, c_, 1, bias=False)  # key
+        self.g = nn.Conv2d(c, c_, 1, bias=False)  # value
         self.out = nn.Conv2d(c_, c, 1, bias=False)
-        self.gamma = nn.Parameter(torch.tensor(0.0))
+        self.gamma = nn.Parameter(torch.tensor(0.0))  # residual gate
 
     def forward(self, x):
         B, C, H, W = x.shape
-        N = H * W
-
-        # 1. Query, Key, Value 생성
-        q = self.theta(x).view(B, -1, N)  # [B, c_, N]
-        k = self.phi(x).view(B, -1, N)  # [B, c_, N]
-        v = self.g(x).view(B, -1, N)  # [B, c_, N]
-        scaling = 1.0 / math.sqrt(q.shape[1])
-        logits = torch.bmm(q.transpose(1, 2), k) * scaling
-
-        # 3. 수치적 안정성을 위한 Max 차감 (이미 구현하셨으나 확인)
-        logits_max, _ = torch.max(logits, dim=-1, keepdim=True)
-        logits = logits - logits_max.detach()  # Gradient 전파 방지 위해 detach 권장
-
-        # 4. Softmax
-        attn = F.softmax(logits, dim=-1)
-        if torch.isnan(attn).any():
-            attn = torch.where(torch.isnan(attn), torch.zeros_like(attn), attn)
-        # 5. Output 계산
-        # attn: [B, N, N], v: [B, c_, N] -> v * attn^T: [B, c_, N]
-        y = torch.bmm(v, attn.transpose(1, 2))
-        y = y.view(B, -1, H, W)
-
+        q = self.theta(x).view(B, -1, H * W)  # [B, c_, N]
+        k = self.phi(x).view(B, -1, H * W)  # [B, c_, N]
+        v = self.g(x).view(B, -1, H * W)  # [B, c_, N]
+        attn = torch.softmax(torch.bmm(q.transpose(1, 2), k), dim=-1)  # [B, N, N]
+        y = torch.bmm(v, attn.transpose(1, 2)).view(B, -1, H, W)  # [B, c_, H, W]
         y = self.out(y)
-
-        # 6. Residual 연결
-        return x + self.gamma * y
+        return x + self.gamma * y  # residual
 
 
 class AttnBlock(nn.Module):
@@ -441,7 +421,7 @@ class AttnBlock(nn.Module):
 
 class AttnGenerator(nn.Module):
     def __init__(self, in_channels=1, out_channels=1, ngf=64,
-                 n_blocks=6, attn_kind="sagan", n_attn=6):
+                 n_blocks=4, attn_kind="sagan", n_attn=4):
         super().__init__()
 
         dim1 = ngf  # 128
@@ -482,7 +462,6 @@ class AttnGenerator(nn.Module):
                 nn.InstanceNorm2d(dim),
             ) for _ in range(n_res)
         ])
-        self.body.apply(init_weights_kaiming)
 
         Attn = AttnBlock
         self.attn_blocks = nn.ModuleList([Attn(dim) for _ in range(n_attn)])
