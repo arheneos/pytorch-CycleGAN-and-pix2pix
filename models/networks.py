@@ -406,10 +406,6 @@ class SelfAttention2d(nn.Module):
         q = self.theta(x).view(B, -1, N)  # [B, c_, N]
         k = self.phi(x).view(B, -1, N)  # [B, c_, N]
         v = self.g(x).view(B, -1, N)  # [B, c_, N]
-
-        # 2. Attention Map 계산 (안정적인 스케일링 적용)
-        # q.transpose와 k의 순서 확인: [B, N, c_] * [B, c_, N] -> [B, N, N]
-        # scaling factor를 조금 더 강화하거나 명시적으로 적용
         scaling = 1.0 / math.sqrt(q.shape[1])
         logits = torch.bmm(q.transpose(1, 2), k) * scaling
 
