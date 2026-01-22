@@ -10,6 +10,17 @@ from torch.optim import lr_scheduler
 ###############################################################################
 
 
+
+def init_weights_kaiming(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu')
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.Linear):
+        nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu')
+        nn.init.zeros_(m.bias)
+
+
 class Identity(nn.Module):
     def forward(self, x):
         return x
@@ -492,6 +503,7 @@ class AttnGenerator(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(dim1 // 2, out_channels, 3, padding=1, padding_mode='replicate'),
         )
+        self.final.apply(init_weights_kaiming)
 
     def forward(self, x):
         img = x  # for final concat
