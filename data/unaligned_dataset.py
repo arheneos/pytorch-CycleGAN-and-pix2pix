@@ -65,6 +65,7 @@ class UnalignedDataset(BaseDataset):
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
         b = b - np.mean(b)
+        b = b / 7
         B_img = Image.fromarray(b)
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)
