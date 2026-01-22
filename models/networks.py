@@ -148,7 +148,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
     norm_layer = get_norm_layer(norm_type=norm)
 
     if netG == "resnet_9blocks":
-        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
+        net = AttnGenerator(input_nc, output_nc)
     elif netG == "resnet_6blocks":
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == "unet_128":
@@ -357,6 +357,120 @@ class ResnetGenerator(nn.Module):
     def forward(self, input):
         """Standard forward"""
         return self.model(input)
+
+
+class SelfAttention2d(nn.Module):
+    def __init__(self, in_channels, reduction=8):
+        super().__init__()
+        c = in_channels
+        c_ = max(1, c // reduction)
+        self.theta = nn.Conv2d(c, c_, 1, bias=False)  # query
+        self.phi = nn.Conv2d(c, c_, 1, bias=False)  # key
+        self.g = nn.Conv2d(c, c_, 1, bias=False)  # value
+        self.out = nn.Conv2d(c_, c, 1, bias=False)
+        self.gamma = nn.Parameter(torch.tensor(0.0))  # residual gate
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        q = self.theta(x).view(B, -1, H * W)  # [B, c_, N]
+        k = self.phi(x).view(B, -1, H * W)  # [B, c_, N]
+        v = self.g(x).view(B, -1, H * W)  # [B, c_, N]
+        attn = torch.softmax(torch.bmm(q.transpose(1, 2), k), dim=-1)  # [B, N, N]
+        y = torch.bmm(v, attn.transpose(1, 2)).view(B, -1, H, W)  # [B, c_, H, W]
+        y = self.out(y)
+        return x + self.gamma * y  # residual
+
+
+class AttnBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.pre = nn.Sequential(
+            nn.Conv2d(dim, dim, 3, padding=1, padding_mode='reflect'),
+            nn.InstanceNorm2d(dim),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.attn = SelfAttention2d(dim)
+
+    def forward(self, x):
+        h = self.pre(x)
+        h = self.attn(h)
+        return x + h
+
+
+class AttnGenerator(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1, ngf=128,
+                 n_blocks=6, attn_kind="sagan", n_attn=6):
+        super().__init__()
+        # 인코더
+        enc = [
+            nn.Conv2d(in_channels, ngf, 7, padding=3, padding_mode='reflect'),
+            nn.InstanceNorm2d(ngf), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ngf, ngf * 2, 3, stride=2, padding=1),
+            nn.InstanceNorm2d(ngf * 2), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ngf * 2, ngf * 4, 3, stride=2, padding=1),
+            nn.InstanceNorm2d(ngf * 4), nn.LeakyReLU(0.2, inplace=True),
+        ]
+        self.enc = nn.Sequential(*enc)
+
+        body = []
+        dim = ngf * 4  # 256ch when ngf=64
+        n_res = max(0, n_blocks - n_attn)
+        for _ in range(n_res):
+            body += [
+                nn.Conv2d(dim, dim, 3, padding=1, padding_mode='replicate'),
+                nn.InstanceNorm2d(dim),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv2d(dim, dim, 3, padding=1, padding_mode='replicate'),
+                nn.InstanceNorm2d(dim),
+            ]
+            # residual fuse
+            body += [nn.Identity()]  # placeholder, 잔차는 forward에서 더함 대신 간단화를 위해 아래처럼 씀
+
+        # attention 블록들
+        Attn = AttnBlock
+        self.attn_blocks = nn.ModuleList([Attn(dim) for _ in range(n_attn)])
+
+        self.body = nn.Sequential(*[
+            nn.Sequential(
+                nn.Conv2d(dim, dim, 3, padding=1, padding_mode='replicate'),
+                nn.InstanceNorm2d(dim),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv2d(dim, dim, 3, padding=1, padding_mode='replicate'),
+                nn.InstanceNorm2d(dim),
+            ) for _ in range(n_res)
+        ])
+
+        # 디코더
+        dec = [
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(dim, dim // 2, 3, padding=1, padding_mode='replicate'),
+            nn.InstanceNorm2d(dim // 2), nn.LeakyReLU(0.2, inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(dim // 2, dim // 2, 3, padding=1, padding_mode='replicate'),
+            nn.InstanceNorm2d(dim // 4), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(dim // 2, dim // 2, 3, padding=1, padding_mode='replicate'),
+            nn.InstanceNorm2d(dim // 2), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(dim // 2, dim // 2, 3, padding=1, padding_mode='replicate'),
+        ]
+        self.dec = nn.Sequential(*dec)
+        self.final = nn.Sequential(
+            nn.Conv2d(dim // 2 + 1, dim // 4, 3, padding=1, padding_mode='replicate'),
+            nn.InstanceNorm2d(dim // 4),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(dim // 4, out_channels, 3, padding=1, padding_mode='replicate'),
+        )
+
+    def forward(self, x):
+        img = x
+        x = self.enc(x)
+        for block in self.body:
+            x = x + block(x)
+        for attn in self.attn_blocks:
+            x = attn(x)
+        x = self.dec(x)
+        x = torch.cat([x, img], dim=1)  # ✅ fix: channel concat
+        x = self.final(x)
+        return x
 
 
 class ResnetBlock(nn.Module):
