@@ -59,8 +59,12 @@ class UnalignedDataset(BaseDataset):
 
         with open(A_path, 'rb') as f:
             data = np.frombuffer(f.read(), dtype=np.float32)
+            data = -data
+            data = data - np.mean(data)
         A_img = Image.fromarray(np.reshape(data[:120 * 120], (120, 120)).copy())
-        B_img = Image.fromarray(np.load(B_path))
+        b = np.load(B_path)
+        b = b - np.mean(b)
+        B_img = Image.fromarray(b)
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)
 
