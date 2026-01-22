@@ -410,7 +410,8 @@ class SelfAttention2d(nn.Module):
 
         # 4. Softmax
         attn = F.softmax(logits, dim=-1)
-
+        if torch.isnan(attn).any():
+            attn = torch.where(torch.isnan(attn), torch.zeros_like(attn), attn)
         # 5. Output 계산
         # attn: [B, N, N], v: [B, c_, N] -> v * attn^T: [B, c_, N]
         y = torch.bmm(v, attn.transpose(1, 2))
