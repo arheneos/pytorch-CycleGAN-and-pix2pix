@@ -98,7 +98,8 @@ def init_weights(net, init_type="normal", init_gain=0.02):
                 raise NotImplementedError("initialization method [%s] is not implemented" % init_type)
             if hasattr(m, "bias") and m.bias is not None:
                 init.constant_(m.bias.data, 0.0)
-        elif classname.find("BatchNorm2d") != -1:  # BatchNorm Layer's weight is not a matrix; only normal distribution applies.
+        elif classname.find(
+                "BatchNorm2d") != -1:  # BatchNorm Layer's weight is not a matrix; only normal distribution applies.
             init.normal_(m.weight.data, 1.0, init_gain)
             init.constant_(m.bias.data, 0.0)
 
@@ -296,13 +297,16 @@ def cal_gradient_penalty(netD, real_data, fake_data, device, type="mixed", const
             interpolatesv = fake_data
         elif type == "mixed":
             alpha = torch.rand(real_data.shape[0], 1, device=device)
-            alpha = alpha.expand(real_data.shape[0], real_data.nelement() // real_data.shape[0]).contiguous().view(*real_data.shape)
+            alpha = alpha.expand(real_data.shape[0], real_data.nelement() // real_data.shape[0]).contiguous().view(
+                *real_data.shape)
             interpolatesv = alpha * real_data + ((1 - alpha) * fake_data)
         else:
             raise NotImplementedError(f"{type} not implemented")
         interpolatesv.requires_grad_(True)
         disc_interpolates = netD(interpolatesv)
-        gradients = torch.autograd.grad(outputs=disc_interpolates, inputs=interpolatesv, grad_outputs=torch.ones(disc_interpolates.size()).to(device), create_graph=True, retain_graph=True, only_inputs=True)
+        gradients = torch.autograd.grad(outputs=disc_interpolates, inputs=interpolatesv,
+                                        grad_outputs=torch.ones(disc_interpolates.size()).to(device), create_graph=True,
+                                        retain_graph=True, only_inputs=True)
         gradients = gradients[0].view(real_data.size(0), -1)  # flat the data
         gradient_penalty = (((gradients + 1e-16).norm(2, dim=1) - constant) ** 2).mean() * lambda_gp  # added eps
         return gradient_penalty, gradients
@@ -316,7 +320,8 @@ class ResnetGenerator(nn.Module):
     We adapt Torch code and idea from Justin Johnson's neural style transfer project(https://github.com/jcjohnson/fast-neural-style)
     """
 
-    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type="reflect"):
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6,
+                 padding_type="reflect"):
         """Construct a Resnet-based generator
 
         Parameters:
@@ -335,21 +340,26 @@ class ResnetGenerator(nn.Module):
         else:
             use_bias = norm_layer == nn.InstanceNorm2d
 
-        model = [nn.ReflectionPad2d(3), nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias), norm_layer(ngf), nn.ReLU(True)]
+        model = [nn.ReflectionPad2d(3), nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                 norm_layer(ngf), nn.ReLU(True)]
 
         n_downsampling = 2
         for i in range(n_downsampling):  # add downsampling layers
-            mult = 2**i
-            model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias), norm_layer(ngf * mult * 2), nn.ReLU(True)]
+            mult = 2 ** i
+            model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                      norm_layer(ngf * mult * 2), nn.ReLU(True)]
 
-        mult = 2**n_downsampling
+        mult = 2 ** n_downsampling
         for i in range(n_blocks):  # add ResNet blocks
 
-            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout,
+                                  use_bias=use_bias)]
 
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
-            model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=2, padding=1, output_padding=1, bias=use_bias), norm_layer(int(ngf * mult / 2)), nn.ReLU(True)]
+            model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=2, padding=1,
+                                         output_padding=1, bias=use_bias), norm_layer(int(ngf * mult / 2)),
+                      nn.ReLU(True)]
         model += [nn.ReflectionPad2d(3)]
         model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
         self.model = nn.Sequential(*model)
@@ -398,39 +408,40 @@ class AttnBlock(nn.Module):
 
 
 class AttnGenerator(nn.Module):
-    def __init__(self, in_channels=1, out_channels=1, ngf=128,
+    def __init__(self, in_channels=1, out_channels=1, ngf=64,
                  n_blocks=6, attn_kind="sagan", n_attn=6):
         super().__init__()
-        # 인코더
-        enc = [
-            nn.Conv2d(in_channels, ngf, 7, padding=3, padding_mode='reflect'),
-            nn.InstanceNorm2d(ngf), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(ngf, ngf * 2, 3, stride=2, padding=1),
-            nn.InstanceNorm2d(ngf * 2), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(ngf * 2, ngf * 4, 3, stride=2, padding=1),
-            nn.InstanceNorm2d(ngf * 4), nn.LeakyReLU(0.2, inplace=True),
-        ]
-        self.enc = nn.Sequential(*enc)
 
-        body = []
-        dim = ngf * 4  # 256ch when ngf=64
+        dim1 = ngf  # 128
+        dim2 = ngf * 2  # 256
+        dim3 = ngf * 4  # 512
+
+        # ----------------
+        # Encoder (feature taps)
+        # ----------------
+        self.enc0 = nn.Sequential(
+            nn.Conv2d(in_channels, dim1, 7, padding=3, padding_mode='reflect'),
+            nn.InstanceNorm2d(dim1),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(dim1, dim2, 3, stride=2, padding=1),
+            nn.InstanceNorm2d(dim2),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.enc2 = nn.Sequential(
+            nn.Conv2d(dim2, dim3, 3, stride=2, padding=1),
+            nn.InstanceNorm2d(dim3),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+        # ----------------
+        # Body: residual blocks (n_res) + attention blocks
+        # ----------------
+        dim = dim3
         n_res = max(0, n_blocks - n_attn)
-        for _ in range(n_res):
-            body += [
-                nn.Conv2d(dim, dim, 3, padding=1, padding_mode='replicate'),
-                nn.InstanceNorm2d(dim),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Conv2d(dim, dim, 3, padding=1, padding_mode='replicate'),
-                nn.InstanceNorm2d(dim),
-            ]
-            # residual fuse
-            body += [nn.Identity()]  # placeholder, 잔차는 forward에서 더함 대신 간단화를 위해 아래처럼 씀
 
-        # attention 블록들
-        Attn = AttnBlock
-        self.attn_blocks = nn.ModuleList([Attn(dim) for _ in range(n_attn)])
-
-        self.body = nn.Sequential(*[
+        self.body = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(dim, dim, 3, padding=1, padding_mode='replicate'),
                 nn.InstanceNorm2d(dim),
@@ -440,36 +451,77 @@ class AttnGenerator(nn.Module):
             ) for _ in range(n_res)
         ])
 
-        # 디코더
-        dec = [
+        Attn = AttnBlock
+        self.attn_blocks = nn.ModuleList([Attn(dim) for _ in range(n_attn)])
+
+        # ----------------
+        # Decoder with skip-concat
+        # ----------------
+        # up1: dim3 -> dim2, then concat enc1(dim2) => dim2+dim2
+        self.up1 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            nn.Conv2d(dim, dim // 2, 3, padding=1, padding_mode='replicate'),
-            nn.InstanceNorm2d(dim // 2), nn.LeakyReLU(0.2, inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            nn.Conv2d(dim // 2, dim // 2, 3, padding=1, padding_mode='replicate'),
-            nn.InstanceNorm2d(dim // 4), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(dim // 2, dim // 2, 3, padding=1, padding_mode='replicate'),
-            nn.InstanceNorm2d(dim // 2), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(dim // 2, dim // 2, 3, padding=1, padding_mode='replicate'),
-        ]
-        self.dec = nn.Sequential(*dec)
-        self.final = nn.Sequential(
-            nn.Conv2d(dim // 2 + 1, dim // 4, 3, padding=1, padding_mode='replicate'),
-            nn.InstanceNorm2d(dim // 4),
+            nn.Conv2d(dim3, dim2, 3, padding=1, padding_mode='replicate'),
+            nn.InstanceNorm2d(dim2),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(dim // 4, out_channels, 3, padding=1, padding_mode='replicate'),
+        )
+        self.fuse1 = nn.Sequential(
+            nn.Conv2d(dim2 + dim2, dim2, 3, padding=1, padding_mode='replicate'),
+            nn.InstanceNorm2d(dim2),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+        # up2: dim2 -> dim1, then concat enc0(dim1) => dim1+dim1
+        self.up2 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(dim2, dim1, 3, padding=1, padding_mode='replicate'),
+            nn.InstanceNorm2d(dim1),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.fuse2 = nn.Sequential(
+            nn.Conv2d(dim1 + dim1, dim1, 3, padding=1, padding_mode='replicate'),
+            nn.InstanceNorm2d(dim1),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+        # ----------------
+        # Final: concat with input image (like you already do)
+        # ----------------
+        self.final = nn.Sequential(
+            nn.Conv2d(dim1 + in_channels, dim1 // 2, 3, padding=1, padding_mode='replicate'),
+            nn.InstanceNorm2d(dim1 // 2),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(dim1 // 2, out_channels, 3, padding=1, padding_mode='replicate'),
         )
 
     def forward(self, x):
-        img = x
-        x = self.enc(x)
+        img = x  # for final concat
+
+        # Encoder + save skips
+        e0 = self.enc0(x)  # (B, dim1, H,   W)
+        e1 = self.enc1(e0)  # (B, dim2, H/2, W/2)
+        x = self.enc2(e1)  # (B, dim3, H/4, W/4)
+
+        # Residual body
         for block in self.body:
             x = x + block(x)
+
+        # Attention
         for attn in self.attn_blocks:
             x = attn(x)
-        x = self.dec(x)
-        x = torch.cat([x, img], dim=1)  # ✅ fix: channel concat
+
+        # Decoder + skip concat
+        x = self.up1(x)  # (B, dim2, H/2, W/2)
+        x = torch.cat([x, e1], dim=1)  # (B, dim2+dim2, H/2, W/2)
+        x = self.fuse1(x)  # (B, dim2, ...)
+
+        x = self.up2(x)  # (B, dim1, H, W)
+        x = torch.cat([x, e0], dim=1)  # (B, dim1+dim1, H, W)
+        x = self.fuse2(x)  # (B, dim1, H, W)
+
+        # Final: concat with original input (optional but you already had it)
+        x = torch.cat([x, img], dim=1)  # (B, dim1+in_channels, H, W)
         x = self.final(x)
+
         return x
 
 
@@ -551,14 +603,19 @@ class UnetGenerator(nn.Module):
         """
         super(UnetGenerator, self).__init__()
         # construct unet structure
-        unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)  # add the innermost layer
+        unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer,
+                                             innermost=True)  # add the innermost layer
         for i in range(num_downs - 5):  # add intermediate layers with ngf * 8 filters
-            unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer, use_dropout=use_dropout)
+            unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block,
+                                                 norm_layer=norm_layer, use_dropout=use_dropout)
         # gradually reduce the number of filters from ngf * 8 to ngf
-        unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
-        unet_block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
+        unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=unet_block,
+                                             norm_layer=norm_layer)
+        unet_block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, input_nc=None, submodule=unet_block,
+                                             norm_layer=norm_layer)
         unet_block = UnetSkipConnectionBlock(ngf, ngf * 2, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
-        self.model = UnetSkipConnectionBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True, norm_layer=norm_layer)  # add the outermost layer
+        self.model = UnetSkipConnectionBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True,
+                                             norm_layer=norm_layer)  # add the outermost layer
 
     def forward(self, input):
         """Standard forward"""
@@ -571,7 +628,8 @@ class UnetSkipConnectionBlock(nn.Module):
     |-- downsampling -- |submodule| -- upsampling --|
     """
 
-    def __init__(self, outer_nc, inner_nc, input_nc=None, submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, use_dropout=False):
+    def __init__(self, outer_nc, inner_nc, input_nc=None, submodule=None, outermost=False, innermost=False,
+                 norm_layer=nn.BatchNorm2d, use_dropout=False):
         """Construct a Unet submodule with skip connections.
 
         Parameters:
@@ -652,14 +710,19 @@ class NLayerDiscriminator(nn.Module):
         nf_mult_prev = 1
         for n in range(1, n_layers):  # gradually increase the number of filters
             nf_mult_prev = nf_mult
-            nf_mult = min(2**n, 8)
-            sequence += [nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias), norm_layer(ndf * nf_mult), nn.LeakyReLU(0.2, True)]
+            nf_mult = min(2 ** n, 8)
+            sequence += [
+                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
+                norm_layer(ndf * nf_mult), nn.LeakyReLU(0.2, True)]
 
         nf_mult_prev = nf_mult
-        nf_mult = min(2**n_layers, 8)
-        sequence += [nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias), norm_layer(ndf * nf_mult), nn.LeakyReLU(0.2, True)]
+        nf_mult = min(2 ** n_layers, 8)
+        sequence += [
+            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+            norm_layer(ndf * nf_mult), nn.LeakyReLU(0.2, True)]
 
-        sequence += [nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
+        sequence += [
+            nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
 
     def forward(self, input):
