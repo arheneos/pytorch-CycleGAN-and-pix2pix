@@ -5,6 +5,7 @@ import functools
 from torch.optim import lr_scheduler
 import math
 import torch.nn.functional as F
+from torch.nn.utils.spectral_norm import spectral_norm
 
 
 ###############################################################################
@@ -386,21 +387,34 @@ class SelfAttention2d(nn.Module):
         super().__init__()
         c = in_channels
         c_ = max(1, c // reduction)
-        self.theta = nn.Conv2d(c, c_, 1, bias=False)  # query
-        self.phi = nn.Conv2d(c, c_, 1, bias=False)  # key
-        self.g = nn.Conv2d(c, c_, 1, bias=False)  # value
-        self.out = nn.Conv2d(c_, c, 1, bias=False)
-        self.gamma = nn.Parameter(torch.tensor(0.0))  # residual gate
+
+        self.theta = spectral_norm(nn.Conv2d(c, c_, 1, bias=False))
+        self.phi = spectral_norm(nn.Conv2d(c, c_, 1, bias=False))
+        self.g = spectral_norm(nn.Conv2d(c, c_, 1, bias=False))
+        self.out = spectral_norm(nn.Conv2d(c_, c, 1, bias=False))
+
+        self.gamma = nn.Parameter(torch.tensor(0.0))
+        self.scale = c_ ** 0.5
 
     def forward(self, x):
         B, C, H, W = x.shape
-        q = self.theta(x).view(B, -1, H * W)  # [B, c_, N]
-        k = self.phi(x).view(B, -1, H * W)  # [B, c_, N]
-        v = self.g(x).view(B, -1, H * W)  # [B, c_, N]
-        attn = torch.softmax(torch.bmm(q.transpose(1, 2), k), dim=-1)  # [B, N, N]
-        y = torch.bmm(v, attn.transpose(1, 2)).view(B, -1, H, W)  # [B, c_, H, W]
+        N = H * W
+
+        q = self.theta(x).view(B, -1, N)  # [B, c_, N]
+        k = self.phi(x).view(B, -1, N)  # [B, c_, N]
+        v = self.g(x).view(B, -1, N)  # [B, c_, N]
+
+        # 1. Scaled Dot-Product: scale로 나누어 Softmax 안정화
+        energy = torch.bmm(q.transpose(1, 2), k) / self.scale  # [B, N, N]
+
+        # 2. Softmax 계산 전 수치적 안정성을 위해 max 값을 빼주기도 함 (PyTorch Softmax는 내부적으로 처리함)
+        attn = torch.softmax(energy, dim=-1)  # [B, N, N]
+
+        # 3. Attention 적용
+        y = torch.bmm(v, attn.transpose(1, 2)).view(B, -1, H, W)
         y = self.out(y)
-        return x + self.gamma * y  # residual
+
+        return x + self.gamma * y
 
 
 class AttnBlock(nn.Module):
