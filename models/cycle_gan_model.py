@@ -183,31 +183,14 @@ class CycleGANModel(BaseModel):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
         # forward
         self.forward()  # compute fake images and reconstruction images.
-
-        # -----------------------------------------------------------
-        # G_A and G_B (Generator) 업데이트
-        # -----------------------------------------------------------
-        self.set_requires_grad([self.netD_A, self.netD_B], False)
-        self.optimizer_G.zero_grad()
-        self.backward_G()
-
-        # [추가] Generator Gradient Clipping
-        # self.netG_A와 self.netG_B의 모든 파라미터를 대상으로 클리핑합니다.
-        torch.nn.utils.clip_grad_norm_(self.netG_A.parameters(), max_norm=1.0)
-        torch.nn.utils.clip_grad_norm_(self.netG_B.parameters(), max_norm=1.0)
-
-        self.optimizer_G.step()
-
-        # -----------------------------------------------------------
-        # D_A and D_B (Discriminator) 업데이트
-        # -----------------------------------------------------------
+        # G_A and G_B
+        self.set_requires_grad([self.netD_A, self.netD_B], False)  # Ds require no gradients when optimizing Gs
+        self.optimizer_G.zero_grad()  # set G_A and G_B's gradients to zero
+        self.backward_G()  # calculate gradients for G_A and G_B
+        self.optimizer_G.step()  # update G_A and G_B's weights
+        # D_A and D_B
         self.set_requires_grad([self.netD_A, self.netD_B], True)
-        self.optimizer_D.zero_grad()
-        self.backward_D_A()
-        self.backward_D_B()
-
-        # [추가] Discriminator Gradient Clipping
-        torch.nn.utils.clip_grad_norm_(self.netD_A.parameters(), max_norm=1.0)
-        torch.nn.utils.clip_grad_norm_(self.netD_B.parameters(), max_norm=1.0)
-
-        self.optimizer_D.step()
+        self.optimizer_D.zero_grad()  # set D_A and D_B's gradients to zero
+        self.backward_D_A()  # calculate gradients for D_A
+        self.backward_D_B()  # calculate graidents for D_B
+        self.optimizer_D.step()  # update D_A and D_B's weights
