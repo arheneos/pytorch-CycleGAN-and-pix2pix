@@ -389,6 +389,8 @@ class SelfAttention2d(nn.Module):
         self.phi = nn.Conv2d(c, c_, 1, bias=False)  # key
         self.g = nn.Conv2d(c, c_, 1, bias=False)  # value
         self.out = nn.Conv2d(c_, c, 1, bias=False)
+
+
         self.theta.apply(init_weights_kaiming)
         self.phi.apply(init_weights_kaiming)
         self.g.apply(init_weights_kaiming)
