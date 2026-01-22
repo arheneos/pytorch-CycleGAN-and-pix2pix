@@ -108,6 +108,8 @@ class Visualizer:
             for label, image in visuals.items():
                 if isinstance(image, torch.Tensor):  # get the data from a variable
                     image = image.data
+                if isinstance(image, type(None)):
+                    return
                 image_numpy = image[0].cpu().float().numpy()  # convert it into a numpy array
                 image_numpy = (np.transpose(image_numpy, (1, 2, 0)))
                 img = image_numpy.astype(np.float32)
