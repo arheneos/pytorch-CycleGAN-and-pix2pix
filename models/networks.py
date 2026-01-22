@@ -3,6 +3,8 @@ import torch.nn as nn
 from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
+import math
+import torch.nn.functional as F
 
 
 ###############################################################################
@@ -403,7 +405,10 @@ class SelfAttention2d(nn.Module):
         q = self.theta(x).view(B, -1, H * W)  # [B, c_, N]
         k = self.phi(x).view(B, -1, H * W)  # [B, c_, N]
         v = self.g(x).view(B, -1, H * W)  # [B, c_, N]
-        attn = torch.softmax(torch.bmm(q.transpose(1, 2), k), dim=-1)  # [B, N, N]
+        logits = torch.bmm(q.transpose(1, 2), k)  # [B, N, N]
+        logits = logits / math.sqrt(q.shape[1])  # c_로 스케일링 (q.shape[1] == c_)
+        logits = logits - logits.max(dim=-1, keepdim=True).values
+        attn = F.softmax(logits, dim=-1)
         y = torch.bmm(v, attn.transpose(1, 2)).view(B, -1, H, W)  # [B, c_, H, W]
         y = self.out(y)
         return x + self.gamma * y  # residual
