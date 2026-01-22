@@ -391,11 +391,6 @@ class SelfAttention2d(nn.Module):
         self.phi = nn.Conv2d(c, c_, 1, bias=False)
         self.g = nn.Conv2d(c, c_, 1, bias=False)
         self.out = nn.Conv2d(c_, c, 1, bias=False)
-
-        # 가중치 초기화 개선 (Xavier/Kaiming을 사용하되 scale을 작게 조절)
-        for m in [self.theta, self.phi, self.g, self.out]:
-            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
-
         self.gamma = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, x):
@@ -435,7 +430,6 @@ class AttnBlock(nn.Module):
             nn.InstanceNorm2d(dim),
             nn.LeakyReLU(0.2, inplace=True),
         )
-        self.pre.apply(init_weights_kaiming)
         self.attn = SelfAttention2d(dim)
 
     def forward(self, x):
@@ -507,9 +501,6 @@ class AttnGenerator(nn.Module):
             nn.InstanceNorm2d(dim2),
             nn.LeakyReLU(0.2, inplace=True),
         )
-        self.fuse1.apply(init_weights_kaiming)
-        self.up1.apply(init_weights_kaiming)
-
         # up2: dim2 -> dim1, then concat enc0(dim1) => dim1+dim1
         self.up2 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
@@ -517,15 +508,11 @@ class AttnGenerator(nn.Module):
             nn.InstanceNorm2d(dim1),
             nn.LeakyReLU(0.2, inplace=True),
         )
-        self.up2.apply(init_weights_kaiming)
-
         self.fuse2 = nn.Sequential(
             nn.Conv2d(dim1 + dim1, dim1, 3, padding=1, padding_mode='replicate'),
             nn.InstanceNorm2d(dim1),
             nn.LeakyReLU(0.2, inplace=True),
         )
-        self.fuse2.apply(init_weights_kaiming)
-
         # ----------------
         # Final: concat with input image (like you already do)
         # ----------------
