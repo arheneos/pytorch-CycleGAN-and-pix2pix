@@ -141,10 +141,7 @@ class CycleGANModel(BaseModel):
         loss_D_fake = self.criterionGAN(pred_fake, False)
         # Combined loss (backward is handled in optimize_parameters to allow NaN/Inf skipping)
         loss_D = (loss_D_real + loss_D_fake) * 0.5
-        if torch.isnan(loss_D).any() or torch.isinf(loss_D).any():
-            pass
-        else:
-            loss_D.backward()
+        loss_D.backward()
         return loss_D
 
     def backward_D_A(self):
@@ -166,9 +163,11 @@ class CycleGANModel(BaseModel):
         if lambda_idt > 0:
             # G_A should be identity if real_B is fed: ||G_A(B) - B||
             self.idt_A = self.netG_A(self.real_B)
+            self.idt_A = torch.nan_to_num(self.idt_A, nan=0.0, posinf=1e6, neginf=-1e6)
             self.loss_idt_A = self.criterionIdt(self.idt_A, self.real_B) * lambda_B * lambda_idt
             # G_B should be identity if real_A is fed: ||G_B(A) - A||
             self.idt_B = self.netG_B(self.real_A)
+            self.idt_B = torch.nan_to_num(self.idt_B, nan=0.0, posinf=1e6, neginf=-1e6)
             self.loss_idt_B = self.criterionIdt(self.idt_B, self.real_A) * lambda_A * lambda_idt
         else:
             self.loss_idt_A = 0
