@@ -7,6 +7,7 @@ from pathlib import Path
 import wandb
 import os
 import torch.distributed as dist
+import cv2
 
 
 def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
@@ -104,8 +105,34 @@ class Visualizer:
         if self.use_wandb:
             ims_dict = {}
             for label, image in visuals.items():
-                image_numpy = util.tensor2im(image)
-                wandb_image = wandb.Image(image_numpy, caption=f"{label} - Step {total_iters}")
+                image_numpy = util.tensor2im(image)  # float, 예: [0,1] 또는 [-1,1]
+
+                # 1️⃣ 범위 정규화 (float → 0~255)
+                img = image_numpy.astype(np.float32)
+
+                # 만약 [-1, 1] 범위라면
+                if img.min() < 0:
+                    img = (img + 1) / 2
+
+                img = np.clip(img, 0, 1)
+                img_uint8 = (img * 255).astype(np.uint8)
+
+                # 2️⃣ grayscale이면 1채널로 변환
+                if img_uint8.ndim == 3 and img_uint8.shape[2] == 3:
+                    img_gray = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2GRAY)
+                else:
+                    img_gray = img_uint8
+
+                # 3️⃣ MAGMA colormap 적용
+                img_magma = cv2.applyColorMap(img_gray, cv2.COLORMAP_MAGMA)
+
+                # 4️⃣ wandb.Image는 RGB를 기대 → BGR → RGB
+                img_magma = cv2.cvtColor(img_magma, cv2.COLOR_BGR2RGB)
+
+                wandb_image = wandb.Image(
+                    img_magma,
+                    caption=f"{label} - Step {total_iters}"
+                )
                 ims_dict[f"results/{label}"] = wandb_image
             self.wandb_run.log(ims_dict, step=total_iters)
 

@@ -1,8 +1,10 @@
+import glob
 import os
 from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset
 from PIL import Image
 import random
+import numpy as np
 
 
 class UnalignedDataset(BaseDataset):
@@ -26,8 +28,8 @@ class UnalignedDataset(BaseDataset):
         self.dir_A = os.path.join(opt.dataroot, opt.phase + "A")  # create a path '/path/to/data/trainA'
         self.dir_B = os.path.join(opt.dataroot, opt.phase + "B")  # create a path '/path/to/data/trainB'
 
-        self.A_paths = sorted(make_dataset(self.dir_A, opt.max_dataset_size))  # load images from '/path/to/data/trainA'
-        self.B_paths = sorted(make_dataset(self.dir_B, opt.max_dataset_size))  # load images from '/path/to/data/trainB'
+        self.A_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/train/*.bin'))  # load images from '/path/to/data/trainA'
+        self.B_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/Real/*.npy'))  # load images from '/path/to/data/trainB'
         self.A_size = len(self.A_paths)  # get the size of dataset A
         self.B_size = len(self.B_paths)  # get the size of dataset B
         btoA = self.opt.direction == "BtoA"
@@ -54,9 +56,11 @@ class UnalignedDataset(BaseDataset):
         else:  # randomize the index for domain B to avoid fixed pairs.
             index_B = random.randint(0, self.B_size - 1)
         B_path = self.B_paths[index_B]
-        A_img = Image.open(A_path).convert("RGB")
-        B_img = Image.open(B_path).convert("RGB")
-        # apply image transformation
+
+        with open(A_path, 'rb') as f:
+            data = np.frombuffer(f.read(), dtype=np.float32)
+        A_img = Image.fromarray(np.reshape(data[:120 * 120], (120, 120)).copy())
+        B_img = Image.fromarray(np.load(B_path))
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)
 

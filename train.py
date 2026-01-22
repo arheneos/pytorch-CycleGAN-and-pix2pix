@@ -25,7 +25,7 @@ from data import create_dataset
 from models import create_model
 from util.visualizer import Visualizer
 from util.util import init_ddp, cleanup_ddp
-
+import tqdm
 
 if __name__ == "__main__":
     opt = TrainOptions().parse()  # get training options
@@ -47,7 +47,7 @@ if __name__ == "__main__":
         if hasattr(dataset, "set_epoch"):
             dataset.set_epoch(epoch)
 
-        for i, data in enumerate(dataset):  # inner loop within one epoch
+        for i, data in tqdm.tqdm(enumerate(dataset)):  # inner loop within one epoch
             iter_start_time = time.time()  # timer for computation per iteration
             if total_iters % opt.print_freq == 0:
                 t_data = iter_start_time - iter_data_time
