@@ -105,7 +105,8 @@ class Visualizer:
         if self.use_wandb:
             ims_dict = {}
             for label, image in visuals.items():
-                image_numpy = image[0].cpu().float().numpy()
+                image_numpy = image[0].cpu().float().numpy()  # convert it into a numpy array
+                image_numpy = (np.transpose(image_numpy, (1, 2, 0)) + 1)
                 img = image_numpy.astype(np.float32)
                 img_gray = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
                 img_magma = cv2.applyColorMap(img_gray, cv2.COLORMAP_MAGMA)
