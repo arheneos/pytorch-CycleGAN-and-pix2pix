@@ -110,6 +110,8 @@ def get_transform(opt, params=None, grayscale=False, method=transforms.Interpola
             transform_list += [transforms.Normalize((0.5,), (0.5,))]
         else:
             transform_list += [transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+    else:
+        transform_list += [transforms.ToTensor()]
     return transforms.Compose(transform_list)
 
 
