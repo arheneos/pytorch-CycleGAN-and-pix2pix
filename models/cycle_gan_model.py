@@ -196,8 +196,8 @@ class CycleGANModel(BaseModel):
 
         if self.backward_G():  # 정상적인 경우
             # [핵심] Gradient Clipping으로 폭주 방지
-            torch.nn.utils.clip_grad_norm_(self.netG_A.parameters(), max_norm=1.0)
-            torch.nn.utils.clip_grad_norm_(self.netG_B.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(self.netG_A.parameters(), max_norm=0.25)
+            torch.nn.utils.clip_grad_norm_(self.netG_B.parameters(), max_norm=0.25)
             self.optimizer_G.step()
         else:  # NaN 발생 시
             print("NaN detected in G! Clearing memory...")
@@ -212,9 +212,8 @@ class CycleGANModel(BaseModel):
         self.backward_D_A()
         self.backward_D_B()
 
-        # Discriminator도 Clipping 권장
-        torch.nn.utils.clip_grad_norm_(self.netD_A.parameters(), max_norm=1.0)
-        torch.nn.utils.clip_grad_norm_(self.netD_B.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.netD_A.parameters(), max_norm=0.25)
+        torch.nn.utils.clip_grad_norm_(self.netD_B.parameters(), max_norm=0.25)
         self.optimizer_D.step()
 
     def _clear_tensors(self):

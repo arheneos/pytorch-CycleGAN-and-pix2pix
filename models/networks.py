@@ -399,23 +399,16 @@ class SelfAttention2d(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         N = H * W
+        q = self.theta(x).view(B, -1, N)
+        k = self.phi(x).view(B, -1, N)
+        v = self.g(x).view(B, -1, N)
+        scale = q.size(1) ** 0.5
+        energy = torch.bmm(q.transpose(1, 2), k) / scale
 
-        q = self.theta(x).view(B, -1, N)  # [B, c_, N]
-        k = self.phi(x).view(B, -1, N)  # [B, c_, N]
-        v = self.g(x).view(B, -1, N)  # [B, c_, N]
-
-        # 1. Scaled Dot-Product: scale로 나누어 Softmax 안정화
-        energy = torch.bmm(q.transpose(1, 2), k) / self.scale  # [B, N, N]
-
-        # 2. Softmax 계산 전 수치적 안정성을 위해 max 값을 빼주기도 함 (PyTorch Softmax는 내부적으로 처리함)
-        attn = torch.softmax(energy, dim=-1)  # [B, N, N]
-
-        # 3. Attention 적용
+        attn = torch.softmax(energy, dim=-1)
         y = torch.bmm(v, attn.transpose(1, 2)).view(B, -1, H, W)
         y = self.out(y)
-
         return x + self.gamma * y
-
 
 class AttnBlock(nn.Module):
     def __init__(self, dim):
