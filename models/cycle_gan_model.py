@@ -181,6 +181,17 @@ class CycleGANModel(BaseModel):
         # combined loss (backward is handled in optimize_parameters to allow NaN/Inf skipping)
         self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
         if torch.isnan(self.loss_G).any() or torch.isinf(self.loss_G).any():
+            self.loss_cycle_A = None
+            self.loss_cycle_B = None
+            self.loss_G = None
+            self.loss_G_A = None
+            self.loss_G_B = None
+            self.loss_idt_A = None
+            self.loss_idt_B = None
+            self.idt_A = None
+            self.idt_B = None
+            self.loss_D_B = None
+            self.loss_D_A = None
             print("[WARN] NaN or Inf detected in Generator loss. Skipping G update.")
             return -1
         else:
