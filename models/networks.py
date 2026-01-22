@@ -398,11 +398,15 @@ class SelfAttention2d(nn.Module):
 
     def forward(self, x):
         B, C, H, W = x.shape
-        q = self.theta(x).view(B, -1, H * W)  # [B, c_, N]
-        k = self.phi(x).view(B, -1, H * W)  # [B, c_, N]
-        v = self.g(x).view(B, -1, H * W)  # [B, c_, N]
-        attn = torch.softmax(torch.bmm(q.transpose(1, 2), k), dim=-1)  # [B, N, N]
-        y = torch.bmm(v, attn.transpose(1, 2)).view(B, -1, H, W)  # [B, c_, H, W]
+        N = H * W
+        q = self.theta(x).view(B, -1, N)
+        k = self.phi(x).view(B, -1, N)
+        v = self.g(x).view(B, -1, N)
+        scale = q.size(1) ** 0.5
+        energy = torch.bmm(q.transpose(1, 2), k) / scale
+        attn = torch.softmax(energy, dim=-1)
+        attn = torch.nan_to_num(attn, nan=0.0)
+        y = torch.bmm(v, attn.transpose(1, 2)).view(B, -1, H, W)
         y = self.out(y)
         return x + self.gamma * y  # residual
 
