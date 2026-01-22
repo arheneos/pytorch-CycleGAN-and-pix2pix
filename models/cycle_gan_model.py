@@ -137,6 +137,10 @@ class CycleGANModel(BaseModel):
         loss_D_fake = self.criterionGAN(pred_fake, False)
         # Combined loss (backward is handled in optimize_parameters to allow NaN/Inf skipping)
         loss_D = (loss_D_real + loss_D_fake) * 0.5
+        if torch.isnan(loss_D).any() or torch.isinf(loss_D).any():
+            pass
+        else:
+            loss_D.backward()
         return loss_D
 
     def backward_D_A(self):
@@ -176,46 +180,28 @@ class CycleGANModel(BaseModel):
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
         # combined loss (backward is handled in optimize_parameters to allow NaN/Inf skipping)
         self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
+        if torch.isnan(self.loss_G).any() or torch.isinf(self.loss_G).any():
+            return -1
+        else:
+            self.loss_G.backward()
+        return 1
 
     def optimize_parameters(self):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
         # forward
         self.forward()  # compute fake images and reconstruction images.
-
-        # ------------------
-        # Optimize Generators
-        # ------------------
-        self.set_requires_grad([self.netD_A, self.netD_B], False)
-        self.optimizer_G.zero_grad(set_to_none=True) if "set_to_none" in self.optimizer_G.zero_grad.__code__.co_varnames else self.optimizer_G.zero_grad()
-
-        # Compute G losses (no backward inside backward_G)
-        self.backward_G()
-
-        # NaN / Inf check for generator loss BEFORE backward
-        if torch.isnan(self.loss_G).any() or torch.isinf(self.loss_G).any():
-            print("[WARN] NaN or Inf detected in Generator loss. Skipping G backward/step.")
-            self.optimizer_G.zero_grad(set_to_none=True) if "set_to_none" in self.optimizer_G.zero_grad.__code__.co_varnames else self.optimizer_G.zero_grad()
-        else:
-            self.loss_G.backward()
-            self.optimizer_G.step()
-
-        # ------------------
-        # Optimize Discriminators
-        # ------------------
+        # G_A and G_B
+        self.set_requires_grad([self.netD_A, self.netD_B], False)  # Ds require no gradients when optimizing Gs
+        self.optimizer_G.zero_grad()  # set G_A and G_B's gradients to zero
+        res = self.backward_G()  # calculate gradients for G_A and G_B
+        if res == -1:
+            self.optimizer_G.zero_grad()
+            self.optimizer_D.zero_grad()
+            return
+        self.optimizer_G.step()  # update G_A and G_B's weights
+        # D_A and D_B
         self.set_requires_grad([self.netD_A, self.netD_B], True)
-        self.optimizer_D.zero_grad(set_to_none=True) if "set_to_none" in self.optimizer_D.zero_grad.__code__.co_varnames else self.optimizer_D.zero_grad()
-
-        # Compute D losses (no backward inside backward_D_basic)
-        fake_B = self.fake_B_pool.query(self.fake_B)
-        fake_A = self.fake_A_pool.query(self.fake_A)
-        self.loss_D_A = self.backward_D_basic(self.netD_A, self.real_B, fake_B)
-        self.loss_D_B = self.backward_D_basic(self.netD_B, self.real_A, fake_A)
-        loss_D = self.loss_D_A + self.loss_D_B
-
-        # NaN / Inf check for discriminator loss BEFORE backward
-        if torch.isnan(loss_D).any() or torch.isinf(loss_D).any():
-            print("[WARN] NaN or Inf detected in Discriminator loss. Skipping D backward/step.")
-            self.optimizer_D.zero_grad(set_to_none=True) if "set_to_none" in self.optimizer_D.zero_grad.__code__.co_varnames else self.optimizer_D.zero_grad()
-        else:
-            loss_D.backward()
-            self.optimizer_D.step()
+        self.optimizer_D.zero_grad()  # set D_A and D_B's gradients to zero
+        self.backward_D_A()  # calculate gradients for D_A
+        self.backward_D_B()  # calculate graidents for D_B
+        self.optimizer_D.step()  # update D_A and D_B's weights
