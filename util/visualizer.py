@@ -118,7 +118,7 @@ class Visualizer:
                     img_magma,
                     caption=f"{label} - Step {total_iters}"
                 )
-                ims_dict[f"results/{label[:5]}"] = wandb_image
+                ims_dict[f"results/{label}"] = wandb_image
             self.wandb_run.log(ims_dict, step=total_iters)
 
         if self.use_html and (save_result or not self.saved):  # save images to an HTML file if they haven't been saved.
