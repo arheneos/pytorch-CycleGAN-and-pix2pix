@@ -8,6 +8,7 @@ import wandb
 import os
 import torch.distributed as dist
 import cv2
+import torch
 
 
 def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
@@ -105,6 +106,8 @@ class Visualizer:
         if self.use_wandb:
             ims_dict = {}
             for label, image in visuals.items():
+                if isinstance(image, torch.Tensor):  # get the data from a variable
+                    image = image.data
                 image_numpy = image[0].cpu().float().numpy()  # convert it into a numpy array
                 image_numpy = (np.transpose(image_numpy, (1, 2, 0)))
                 img = image_numpy.astype(np.float32)
