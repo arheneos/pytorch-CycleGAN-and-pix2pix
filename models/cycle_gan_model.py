@@ -114,9 +114,13 @@ class CycleGANModel(BaseModel):
     def forward(self):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
         self.fake_B = self.netG_A(self.real_A)  # G_A(A)
+        self.fake_B = torch.nan_to_num(self.fake_B, nan=0.0, posinf=1e6, neginf=-1e6)
         self.rec_A = self.netG_B(self.fake_B)  # G_B(G_A(A))
+        self.rec_A = torch.nan_to_num(self.rec_A, nan=0.0, posinf=1e6, neginf=-1e6)
         self.fake_A = self.netG_B(self.real_B)  # G_B(B)
+        self.fake_A = torch.nan_to_num(self.fake_A, nan=0.0, posinf=1e6, neginf=-1e6)
         self.rec_B = self.netG_A(self.fake_A)  # G_A(G_B(B))
+        self.rec_B = torch.nan_to_num(self.rec_B, nan=0.0, posinf=1e6, neginf=-1e6)
 
     def backward_D_basic(self, netD, real, fake):
         """Calculate GAN loss for the discriminator
@@ -180,23 +184,7 @@ class CycleGANModel(BaseModel):
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
         # combined loss (backward is handled in optimize_parameters to allow NaN/Inf skipping)
         self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
-        if torch.isnan(self.loss_G).any() or torch.isinf(self.loss_G).any():
-            self.loss_cycle_A = None
-            self.loss_cycle_B = None
-            self.loss_G = None
-            self.loss_G_A = None
-            self.loss_G_B = None
-            self.loss_idt_A = None
-            self.loss_idt_B = None
-            self.idt_A = None
-            self.idt_B = None
-            self.loss_D_B = None
-            self.loss_D_A = None
-            print("[WARN] NaN or Inf detected in Generator loss. Skipping G update.")
-            return -1
-        else:
-            self.loss_G.backward()
-        return 1
+        self.loss_G.backward()
 
     def optimize_parameters(self):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
@@ -205,21 +193,7 @@ class CycleGANModel(BaseModel):
         # G_A and G_B
         self.set_requires_grad([self.netD_A, self.netD_B], False)  # Ds require no gradients when optimizing Gs
         self.optimizer_G.zero_grad()  # set G_A and G_B's gradients to zero
-        res = self.backward_G()  # calculate gradients for G_A and G_B
-        if res == -1:
-            for opt in self.optimizers:
-                opt.zero_grad()
-            self.optimizer_G.zero_grad()
-            self.optimizer_D.zero_grad()
-            self.fake_A = None
-            self.fake_B = None
-            self.rec_A = None
-            self.rec_B = None
-            self.idt_A = None
-            self.idt_B = None
-            self.loss_G = None
-            torch.cuda.empty_cache()
-            return
+        self.backward_G()  # calculate gradients for G_A and G_B
         self.optimizer_G.step()  # update G_A and G_B's weights
         # D_A and D_B
         self.set_requires_grad([self.netD_A, self.netD_B], True)
