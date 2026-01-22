@@ -61,6 +61,12 @@ class UnalignedDataset(BaseDataset):
             data = np.frombuffer(f.read(), dtype=np.float32)
 
         data = np.reshape(data[:120 * 120], (120, 120)).copy()
+        if not np.isfinite(data).all():
+            A_path = self.A_paths[(index + 1) % self.A_size]  # make sure index is within then range
+            with open(A_path, 'rb') as f:
+                data = np.frombuffer(f.read(), dtype=np.float32)
+            data = np.reshape(data[:120 * 120], (120, 120)).copy()
+
         data = data - np.mean(data)
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
