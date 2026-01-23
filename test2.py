@@ -15,7 +15,9 @@ state_dict = torch.load('/home/psdl/Workspace/pytorch-CycleGAN-and-pix2pix/check
 netG_B.load_state_dict(state_dict, strict=True)
 netG_B.eval()
 ret = transforms.Compose([transforms.ToTensor()])
-for single in glob.glob('train/*.bin')[:1]:
+i = 0
+for single in glob.glob('train/*.bin'):
+    i += 1
     with open(single, 'rb') as f:
         data = np.frombuffer(f.read(), dtype=np.float32)
     data = np.reshape(data[:120 * 120], (120, 120)).copy()
@@ -35,5 +37,5 @@ for single in glob.glob('train/*.bin')[:1]:
     img_magma = cv2.applyColorMap(img_gray, cv2.COLORMAP_MAGMA)
     orig = cv2.normalize(orig, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     orig = cv2.applyColorMap(orig, cv2.COLORMAP_MAGMA)
-    cv2.imwrite('img.png', img_magma)
+    cv2.imwrite(f'imgs/img{i}.png', img_magma)
     print(res)
