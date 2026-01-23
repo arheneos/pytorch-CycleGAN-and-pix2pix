@@ -569,6 +569,7 @@ class AttnGenerator(nn.Module):
             nn.InstanceNorm2d(dim1 // 2),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(dim1 // 2, out_channels, 3, padding=1, padding_mode='replicate'),
+            nn.Tanh()
         )
         self.final.apply(init_weights_kaiming)
 
