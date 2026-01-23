@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import torchvision.transforms as transforms
 
-netG_B = networks.define_G(1, 1, 128, 'resnet_9blocks').float()
+netG_B = networks.define_G(1, 1, 128, 'resnet_9blocks')
 
 state_dict = torch.load('/home/psdl/Workspace/pytorch-CycleGAN-and-pix2pix/checkpoints/maps_cyclegan/latest_net_G_A.pth', map_location='cuda:1')
 
