@@ -69,12 +69,24 @@ class UnalignedDataset(BaseDataset):
 
         data = data - np.mean(data)
         std = data.std()
+        if std == 0:
+            A_path = self.A_paths[(index + 1) % self.A_size]  # make sure index is within then range
+            with open(A_path, 'rb') as f:
+                data = np.frombuffer(f.read(), dtype=np.float32)
+            data = np.reshape(data[:120 * 120], (120, 120)).copy()
+            data = data - np.mean(data)
+            std = data.std()
         dz = data / (std * 10)
         dz = np.clip(dz, -1, 1)
         A_img = Image.fromarray(dz)
         b = -np.load(B_path)
         b = b - np.mean(b)
         std = b.std()
+        if std == 0:
+            B_path = self.B_paths[index_B + 1]
+            b = -np.load(B_path)
+            b = b - np.mean(b)
+            std = b.std()
         b = b / (std * 10)
         b = np.clip(b, -1, 1)
         B_img = Image.fromarray(b)
