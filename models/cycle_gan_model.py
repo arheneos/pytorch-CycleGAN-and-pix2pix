@@ -120,9 +120,21 @@ class CycleGANModel(BaseModel):
     def forward(self):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
         self.fake_B = self.netG_A(self.real_A)  # G_A(A)
-        self.rec_A = self.netG_B(self.fake_B)  # G_B(G_A(A))
+        if self.isTrain:
+            noise_std = 0.05  # 노이즈 강도 설정
+            noise_B = torch.randn_like(self.fake_B) * noise_std
+            self.rec_A = self.netG_B(self.fake_B + noise_B)  # G_B(G_A(A) + noise)
+        else:
+            self.rec_A = self.netG_B(self.fake_B)
         self.fake_A = self.netG_B(self.real_B)  # G_B(B)
-        self.rec_B = self.netG_A(self.fake_A)  # G_A(G_B(B))
+
+        if self.isTrain:
+            noise_std = 0.05
+            noise_A = torch.randn_like(self.fake_A) * noise_std
+            self.rec_B = self.netG_A(self.fake_A + noise_A)  # G_A(G_B(B) + noise)
+        else:
+            self.rec_B = self.netG_A(self.fake_A)
+
     def backward_D_basic(self, netD, real, fake):
         """Calculate GAN loss for the discriminator
 
