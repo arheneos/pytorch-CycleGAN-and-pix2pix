@@ -212,6 +212,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
         net = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer)
     elif netD == "pixel":  # classify if each pixel is real or fake
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
+    elif netD == "attn":  # classify if each pixel is real or fake
+        net = AttnDiscriminator(input_nc, ndf)
     else:
         raise NotImplementedError("Discriminator model name [%s] is not recognized" % netD)
     return net
@@ -786,6 +788,29 @@ class NLayerDiscriminator(nn.Module):
     def forward(self, input):
         """Standard forward."""
         return self.model(input)
+
+
+class AttnDiscriminator(nn.Module):
+    def __init__(self, in_channels=1, ndf=64):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, ndf, 4, stride=2, padding=1)  # 32x32
+        self.lrelu = nn.LeakyReLU(0.2, inplace=True)
+
+        self.conv2 = nn.Conv2d(ndf, ndf * 2, 4, stride=2, padding=1)  # 16x16
+        self.norm2 = nn.InstanceNorm2d(ndf * 2)
+
+        # Attention block at 16x16 stage
+        self.cbam = CBAM(ndf * 2)
+
+        self.conv3 = nn.Conv2d(ndf * 2, 1, 4, stride=1, padding=1)  # Patch score
+        # output ~ [B,1,15,15]
+
+    def forward(self, x):
+        x = self.lrelu(self.conv1(x))
+        x = self.lrelu(self.norm2(self.conv2(x)))
+        x = self.cbam(x)
+        x = self.conv3(x)
+        return x
 
 
 class PixelDiscriminator(nn.Module):
