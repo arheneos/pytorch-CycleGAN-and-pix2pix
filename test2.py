@@ -14,7 +14,7 @@ state_dict = torch.load('/home/psdl/Workspace/pytorch-CycleGAN-and-pix2pix/check
 
 netG_B.load_state_dict(state_dict, strict=True)
 netG_B.eval()
-ret = transforms.Compose([transforms.ToTensor()])
+ret = transforms.Compose([transforms.Grayscale(1), transforms.ToTensor()])
 i = 0
 for single in glob.glob('train/*.bin'):
     i += 1
