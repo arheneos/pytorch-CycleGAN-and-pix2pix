@@ -219,31 +219,19 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
     return net
 
 
-class TwoFactorStructuralLoss(nn.Module):
-    def __init__(self, alpha=0.84, structural_ratio=0.5):
-        """
-        alpha: 전체 Loss 중 '구조적 손실'이 차지하는 비중 (0~1)
-        structural_ratio: 구조적 손실 내에서 SSIM과 MS-SSIM의 배합 (0.5면 반반)
-        """
-        super(TwoFactorStructuralLoss, self).__init__()
-        self.alpha = alpha
-        self.s_ratio = structural_ratio
+class StructuralLoss(nn.Module):
+    def __init__(self, alpha=0.84):
+        super(StructuralLoss, self).__init__()
+        self.alpha = alpha  # MS-SSIM과 L1/MSE 사이의 밸런스 가중치
         self.mse = nn.MSELoss()
 
     def forward(self, img1, img2):
-        # [Step 1] Pixel-wise Factor (픽셀 오차)
-        loss_pixel = self.mse(img1, img2)
+        # 1 - SSIM을 하면 손실(Loss) 형태가 됩니다 (값이 작을수록 좋음)
+        loss_ssim = 1 - ssim(img1, img2)
+        loss_mse = self.mse(img1, img2)
 
-        # [Step 2] Structural Factor (구조 오차)
-        # SSIM과 MS-SSIM을 결합하여 하나의 구조적 요인으로 만듭니다.
-        l_ssim = 1 - ssim(img1, img2)
-        l_ms_ssim = 1 - ms_ssim(img1, img2)
-        loss_structural = (self.s_ratio * l_ssim) + ((1 - self.s_ratio) * l_ms_ssim)
-
-        # [Step 3] 최종 결합 (Two-Factor)
-        # alpha는 '구조'와 '픽셀' 사이의 저울 역할을 합니다.
-        return self.alpha * loss_structural + (1 - self.alpha) * loss_pixel
-
+        # 복합 손실 계산
+        return self.alpha * loss_ssim + (1 - self.alpha) * loss_mse
 
 ##############################################################################
 # Classes
@@ -271,7 +259,7 @@ class GANLoss(nn.Module):
         self.register_buffer("fake_label", torch.tensor(target_fake_label))
         self.gan_mode = gan_mode
         if gan_mode == "lsgan":
-            self.loss = TwoFactorStructuralLoss()
+            self.loss = StructuralLoss()
         elif gan_mode == "vanilla":
             self.loss = nn.BCEWithLogitsLoss()
         elif gan_mode in ["wgangp"]:
