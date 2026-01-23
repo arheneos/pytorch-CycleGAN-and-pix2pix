@@ -409,7 +409,7 @@ class ChannelGate(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         avg = F.adaptive_avg_pool2d(x, 1).view(B, C)
-        mx = F.adaptive_max_pool2d(x, 1).view(B, C)
+        mx = torch.max(torch.max(x, dim=3, keepdim=True)[0], dim=2, keepdim=True)[0].view(B, C)
         s = torch.sigmoid(self.mlp(avg) + self.mlp(mx)).view(B, C, 1, 1)
         return x * s
 
