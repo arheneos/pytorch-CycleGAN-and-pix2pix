@@ -121,7 +121,7 @@ class CycleGANModel(BaseModel):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
         self.fake_B = self.netG_A(self.real_A)  # G_A(A)
         if self.isTrain:
-            noise_std = 0.05  # 노이즈 강도 설정
+            noise_std = 0.01  # 노이즈 강도 설정
             noise_B = torch.randn_like(self.fake_B) * noise_std
             self.rec_A = self.netG_B(self.fake_B + noise_B)  # G_B(G_A(A) + noise)
         else:
@@ -129,7 +129,7 @@ class CycleGANModel(BaseModel):
         self.fake_A = self.netG_B(self.real_B)  # G_B(B)
 
         if self.isTrain:
-            noise_std = 0.05
+            noise_std = 0.01
             noise_A = torch.randn_like(self.fake_A) * noise_std
             self.rec_B = self.netG_A(self.fake_A + noise_A)  # G_A(G_B(B) + noise)
         else:
