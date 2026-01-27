@@ -7,36 +7,23 @@ import random
 import numpy as np
 
 
-def normalize_real_range(data, R=1.0):
-    # 실수 범위 전체에서 통계량 추출
+def normalize_min_max(data, R=1.0):
+    """
+    데이터를 [-R, R] 범위로 Min-Max 정규화 (기본 R=1.0)
+    """
     min_val = np.min(data)
     max_val = np.max(data)
-    mean_val = np.mean(data)  # 혹은 np.median(data)
 
-    # 분모가 0이 되는 것을 방지 (모든 값이 같을 경우)
+    # 분모가 0이 되는 경우 방지 (모든 값이 동일할 때)
     if max_val == min_val:
-        return np.zeros_like(data), mean_val, min_val, max_val
+        return np.zeros_like(data), min_val, max_val
 
-    z_norm = np.zeros_like(data, dtype=float)
+    # [수식] x_norm = 2 * (x - min) / (max - min) - 1
+    # 여기에 R을 곱하여 [-R, R] 범위를 조정합니다.
+    data_norm = 2 * (data - min_val) / (max_val - min_val) - 1
+    data_norm = data_norm * R
 
-    # [구간 1] Min ~ Mean -> [-R, 0]
-    lower_mask = (data <= mean_val)
-    denom_lower = mean_val - min_val
-    if denom_lower > 0:
-        z_norm[lower_mask] = R * (data[lower_mask] - mean_val) / denom_lower
-    else:
-        z_norm[lower_mask] = 0.0
-
-    # [구간 2] Mean ~ Max -> [0, R]
-    upper_mask = (data > mean_val)
-    denom_upper = max_val - mean_val
-    if denom_upper > 0:
-        z_norm[upper_mask] = R * (data[upper_mask] - mean_val) / denom_upper
-    else:
-        z_norm[upper_mask] = 0.0
-
-    return z_norm, mean_val, min_val, max_val
-
+    return data_norm
 
 class UnalignedDataset(BaseDataset):
     """
@@ -92,13 +79,13 @@ class UnalignedDataset(BaseDataset):
             data = np.frombuffer(f.read(), dtype=np.float32)
 
         data = np.reshape(data[:120 * 120], (120, 120)).copy()
-        data, _, _, _ = normalize_real_range(data)
+        data = normalize_min_max(data)
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
         if b.shape[0] < 64 and b.shape[1] < 64:
             B_path = self.B_paths[index_B + 1]
             b = -np.load(B_path)
-        b, _, _, _ = normalize_real_range(b)
+        b = normalize_min_max(b)
         B_img = Image.fromarray(b)
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)
