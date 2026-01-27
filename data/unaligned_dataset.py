@@ -85,26 +85,38 @@ class UnalignedDataset(BaseDataset):
             b = -np.load(B_path)
 
         if b.shape[0] < 64 or b.shape[1] < 64:
+            self.B_paths = [x for x in self.B_paths if x != B_path]
+            self.B_size = len(self.B_paths)
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
 
         if not np.isfinite(b).all():
+            self.B_paths = [x for x in self.B_paths if x != B_path]
+            self.B_size = len(self.B_paths)
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
 
         if b.shape[0] < 64 or b.shape[1] < 64:
+            self.B_paths = [x for x in self.B_paths if x != B_path]
+            self.B_size = len(self.B_paths)
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
 
         if not np.isfinite(b).all():
+            self.B_paths = [x for x in self.B_paths if x != B_path]
+            self.B_size = len(self.B_paths)
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
 
         if b.shape[0] < 64 or b.shape[1] < 64:
+            self.B_paths = [x for x in self.B_paths if x != B_path]
+            self.B_size = len(self.B_paths)
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
 
         if not np.isfinite(b).all():
+            self.B_paths = [x for x in self.B_paths if x != B_path]
+            self.B_size = len(self.B_paths)
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
 
@@ -114,7 +126,14 @@ class UnalignedDataset(BaseDataset):
         except:
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
+            if not np.isfinite(b).all():
+                self.B_paths = [x for x in self.B_paths if x != B_path]
+                self.B_size = len(self.B_paths)
+                B_path = random.choice(self.B_paths)
+                b = -np.load(B_path)
             if b.shape[0] < 64 or b.shape[1] < 64:
+                self.B_paths = [x for x in self.B_paths if x != B_path]
+                self.B_size = len(self.B_paths)
                 B_path = random.choice(self.B_paths)
                 b = -np.load(B_path)
             B_img = Image.fromarray(b)
