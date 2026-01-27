@@ -7,6 +7,37 @@ import random
 import numpy as np
 
 
+def normalize_real_range(data, R=1.0):
+    # 실수 범위 전체에서 통계량 추출
+    min_val = np.min(data)
+    max_val = np.max(data)
+    mean_val = np.mean(data)  # 혹은 np.median(data)
+
+    # 분모가 0이 되는 것을 방지 (모든 값이 같을 경우)
+    if max_val == min_val:
+        return np.zeros_like(data), mean_val, min_val, max_val
+
+    z_norm = np.zeros_like(data, dtype=float)
+
+    # [구간 1] Min ~ Mean -> [-R, 0]
+    lower_mask = (data <= mean_val)
+    denom_lower = mean_val - min_val
+    if denom_lower > 0:
+        z_norm[lower_mask] = R * (data[lower_mask] - mean_val) / denom_lower
+    else:
+        z_norm[lower_mask] = 0.0
+
+    # [구간 2] Mean ~ Max -> [0, R]
+    upper_mask = (data > mean_val)
+    denom_upper = max_val - mean_val
+    if denom_upper > 0:
+        z_norm[upper_mask] = R * (data[upper_mask] - mean_val) / denom_upper
+    else:
+        z_norm[upper_mask] = 0.0
+
+    return z_norm, mean_val, min_val, max_val
+
+
 class UnalignedDataset(BaseDataset):
     """
     This dataset class can load unaligned/unpaired datasets.
@@ -61,34 +92,10 @@ class UnalignedDataset(BaseDataset):
             data = np.frombuffer(f.read(), dtype=np.float32)
 
         data = np.reshape(data[:120 * 120], (120, 120)).copy()
-        if not np.isfinite(data).all():
-            A_path = self.A_paths[(index + 1) % self.A_size]  # make sure index is within then range
-            with open(A_path, 'rb') as f:
-                data = np.frombuffer(f.read(), dtype=np.float32)
-            data = np.reshape(data[:120 * 120], (120, 120)).copy()
-
-        data = data - np.mean(data)
-        std = data.std()
-        if std == 0:
-            A_path = self.A_paths[(index + 1) % self.A_size]  # make sure index is within then range
-            with open(A_path, 'rb') as f:
-                data = np.frombuffer(f.read(), dtype=np.float32)
-            data = np.reshape(data[:120 * 120], (120, 120)).copy()
-            data = data - np.mean(data)
-            std = data.std()
-        dz = data / (std * 10)
-        dz = np.clip(dz, -1, 1)
-        A_img = Image.fromarray(dz)
+        data, _, _, _ = normalize_real_range(data)
+        A_img = Image.fromarray(data)
         b = -np.load(B_path)
-        b = b - np.mean(b)
-        std = b.std()
-        if std == 0:
-            B_path = self.B_paths[index_B + 1]
-            b = -np.load(B_path)
-            b = b - np.mean(b)
-            std = b.std()
-        b = b / (std * 10)
-        b = np.clip(b, -1, 1)
+        b, _, _, _ = normalize_real_range(b)
         B_img = Image.fromarray(b)
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)
