@@ -82,15 +82,34 @@ class UnalignedDataset(BaseDataset):
         data = normalize_min_max(data)
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
+        if not np.isfinite(b).all():
+            B_path = random.choice(self.B_paths)
+            b = -np.load(B_path)
+
         if b.shape[0] < 64 or b.shape[1] < 64:
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
+
+        if not np.isfinite(b).all():
+            B_path = random.choice(self.B_paths)
+            b = -np.load(B_path)
+
         if b.shape[0] < 64 or b.shape[1] < 64:
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
+
+        if not np.isfinite(b).all():
+            B_path = random.choice(self.B_paths)
+            b = -np.load(B_path)
+
         if b.shape[0] < 64 or b.shape[1] < 64:
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
+
+        if not np.isfinite(b).all():
+            B_path = random.choice(self.B_paths)
+            b = -np.load(B_path)
+
         b = normalize_min_max(b)
         try:
             B_img = Image.fromarray(b)
