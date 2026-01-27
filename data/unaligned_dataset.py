@@ -22,7 +22,7 @@ def normalize_min_max(data, R=1.0):
     # 여기에 R을 곱하여 [-R, R] 범위를 조정합니다.
     data_norm = 2 * (data - min_val) / (max_val - min_val) - 1
     data_norm = data_norm * R
-
+    data_norm = np.clip(data_norm, -1, 1)
     return data_norm
 
 class UnalignedDataset(BaseDataset):
