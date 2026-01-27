@@ -16,7 +16,7 @@ def normalize_min_max(data, R=1.0):
 
     # 분모가 0이 되는 경우 방지 (모든 값이 동일할 때)
     if max_val == min_val:
-        return np.zeros_like(data), min_val, max_val
+        return np.zeros_like(data)
 
     # [수식] x_norm = 2 * (x - min) / (max - min) - 1
     # 여기에 R을 곱하여 [-R, R] 범위를 조정합니다.
