@@ -85,6 +85,12 @@ class UnalignedDataset(BaseDataset):
         if b.shape[0] < 64 and b.shape[1] < 64:
             B_path = self.B_paths[index_B + 1]
             b = -np.load(B_path)
+        if b.shape[0] < 64 and b.shape[1] < 64:
+            B_path = self.B_paths[index_B + 2]
+            b = -np.load(B_path)
+        if b.shape[0] < 64 and b.shape[1] < 64:
+            B_path = self.B_paths[index_B + 3]
+            b = -np.load(B_path)
         b = normalize_min_max(b)
         B_img = Image.fromarray(b)
         A = self.transform_A(A_img)
