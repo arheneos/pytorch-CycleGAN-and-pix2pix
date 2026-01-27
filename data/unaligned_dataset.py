@@ -83,13 +83,13 @@ class UnalignedDataset(BaseDataset):
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
         if b.shape[0] < 64 or b.shape[1] < 64:
-            B_path = self.B_paths[index_B + 1]
+            B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
         if b.shape[0] < 64 or b.shape[1] < 64:
-            B_path = self.B_paths[index_B + 2]
+            B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
         if b.shape[0] < 64 or b.shape[1] < 64:
-            B_path = self.B_paths[index_B + 3]
+            B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
         b = normalize_min_max(b)
         B_img = Image.fromarray(b)
