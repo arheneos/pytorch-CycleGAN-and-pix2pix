@@ -95,6 +95,9 @@ class UnalignedDataset(BaseDataset):
         data, _, _, _ = normalize_real_range(data)
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
+        if b.shape[0] < 64 and b.shape[1] < 64:
+            B_path = self.B_paths[index_B + 1]
+            b = -np.load(B_path)
         b, _, _, _ = normalize_real_range(b)
         B_img = Image.fromarray(b)
         A = self.transform_A(A_img)
