@@ -97,6 +97,15 @@ class UnalignedDataset(BaseDataset):
 
         data = np.reshape(data[:120 * 120], (120, 120)).copy()
         data = normalize_min_max(data)
+        if not np.isfinite(data).all():
+            A_path = random.choice(self.A_paths)
+            data = np.reshape(data[:120 * 120], (120, 120)).copy()
+            data = normalize_min_max(data)
+        if not np.isfinite(data).all():
+            A_path = random.choice(self.A_paths)
+            data = np.reshape(data[:120 * 120], (120, 120)).copy()
+            data = normalize_min_max(data)
+
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
         if not np.isfinite(b).all():
