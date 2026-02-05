@@ -23,6 +23,7 @@ def normalize_min_max(data, R=1.0):
     data_norm = np.clip(data_norm, -1, 1)
     return data_norm
 
+
 class UnalignedDataset(BaseDataset):
     """
     This dataset class can load unaligned/unpaired datasets.
@@ -45,7 +46,25 @@ class UnalignedDataset(BaseDataset):
         self.dir_B = os.path.join(opt.dataroot, opt.phase + "B")  # create a path '/path/to/data/trainB'
 
         self.A_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/train/*.bin'))  # load images from '/path/to/data/trainA'
-        self.B_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/Real/*.npy'))  # load images from '/path/to/data/trainB'
+        B_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/Real/*.npy'))  # load images from '/path/to/data/trainB'
+
+        self.B_paths = []
+        for single in tqdm.tqdm(B_paths):
+            data = -np.load(single).copy()
+            h, w = data.shape
+            data = data - np.mean(data)
+            if h < 100 and w < 100:
+                continue
+            dR = np.diff(data, axis=1)  # row-wise gradient
+            dC = np.diff(data, axis=0)  # column-wise gradient
+            std_r = np.std(dR)
+            std_c = np.std(dC)
+            ratio = std_c / (std_r + 1e-12)  # 방지용 epsilon
+            if ratio < 10 and data.std() > 50:
+                if not np.isfinite(data).all():
+                    continue
+                self.B_paths.append(single)
+
         self.A_size = len(self.A_paths)  # get the size of dataset A
         self.B_size = len(self.B_paths)  # get the size of dataset B
         btoA = self.opt.direction == "BtoA"
@@ -80,64 +99,8 @@ class UnalignedDataset(BaseDataset):
         data = normalize_min_max(data)
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
-        if not np.isfinite(b).all():
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if b.shape[0] < 64 or b.shape[1] < 64:
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if not np.isfinite(b).all():
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if b.shape[0] < 64 or b.shape[1] < 64:
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if not np.isfinite(b).all():
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if b.shape[0] < 64 or b.shape[1] < 64:
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if not np.isfinite(b).all():
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
         b = normalize_min_max(b)
-        try:
-            B_img = Image.fromarray(b)
-        except:
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-            if not np.isfinite(b).all():
-                self.B_paths = [x for x in self.B_paths if x != B_path]
-                self.B_size = len(self.B_paths)
-                B_path = random.choice(self.B_paths)
-                b = -np.load(B_path)
-            if b.shape[0] < 64 or b.shape[1] < 64:
-                self.B_paths = [x for x in self.B_paths if x != B_path]
-                self.B_size = len(self.B_paths)
-                B_path = random.choice(self.B_paths)
-                b = -np.load(B_path)
-            B_img = Image.fromarray(b)
-
+        B_img = Image.fromarray(b)
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)
 
