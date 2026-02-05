@@ -5,7 +5,7 @@ from data.image_folder import make_dataset
 from PIL import Image
 import random
 import numpy as np
-
+import tqdm
 
 def normalize_min_max(data, R=1.0):
     """
