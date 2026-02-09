@@ -226,9 +226,8 @@ def softsign_l1_loss(pred, target):
     """
     # Softsign을 통해 데이터를 [-1, 1] 범위로 압축
     # 입력이 10이면 10/11 = 0.909, 100이면 100/101 = 0.99
-    s_pred = F.softsign(pred)
-    s_target = F.softsign(target)
-
+    s_pred = torch.log1p(F.softplus(pred))
+    s_target = torch.log1p(F.softplus(target))
     return F.l1_loss(s_pred, s_target)
 
 class StructuralLoss(nn.Module):
