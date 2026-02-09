@@ -487,7 +487,7 @@ class SelfAttention2d(nn.Module):
         k = self.phi(x).view(B, -1, N)
         v = self.g(x).view(B, -1, N)
         scale = q.size(1) ** 0.5
-        energy = torch.bmm(q.transpose(1, 2), k) / scale
+        energy = torch.bmm(q.transpose(1, 2), k) / (scale * 2.0)  # 스케일 보정
         attn = torch.softmax(energy, dim=-1)
         attn = torch.nan_to_num(attn, nan=0.0)
         y = torch.bmm(v, attn.transpose(1, 2)).view(B, -1, H, W)
@@ -583,7 +583,8 @@ class AttnGenerator(nn.Module):
             nn.Conv2d(dim1 // 2, out_channels, 3, padding=1, padding_mode='replicate'),
             # nn.Tanh()
         )
-        self.final.apply(init_weights_kaiming)
+        nn.init.constant_(self.final[-1].weight, 0.01)
+        nn.init.constant_(self.final[-1].bias, 0.0)
 
     def forward(self, x):
         img = x  # for final concat
