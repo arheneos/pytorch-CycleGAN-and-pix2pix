@@ -220,15 +220,14 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
     return net
 
 
-def sensor_identity_loss(pred, target, scale=5.0):
-    # 데이터를 변환하는 게 아니라, 비교할 때만 스케일을 조정
-    # scale=5.0은 데이터의 STD 근처로 잡는 것이 수치적으로 가장 안정적입니다.
-    s_pred = F.softsign(pred / scale)
-    s_target = F.softsign(target / scale)
+def robust_log_l1_loss(pred, target, scale=1.0):
+    # 1. 부호를 보존하면서 로그 압축 (Symmetric Log)
+    # log(1 + |x|) * sign(x)
+    s_pred = torch.sign(pred) * torch.log1p(torch.abs(pred / scale))
+    s_target = torch.sign(target) * torch.log1p(torch.abs(target / scale))
 
-    # L1은 미세한 신호 차이를 잘 잡아내고, softsign은 아웃라이어 폭주를 막습니다.
+    # 2. 압축된 도메인에서 L1 Loss 계산
     return F.l1_loss(s_pred, s_target)
-
 
 class StructuralLoss(nn.Module):
     def __init__(self, alpha=0.84):
@@ -272,7 +271,7 @@ class GANLoss(nn.Module):
         self.register_buffer("fake_label", torch.tensor(target_fake_label))
         self.gan_mode = gan_mode
         if gan_mode == "lsgan":
-            self.loss = sensor_identity_loss
+            self.loss = robust_log_l1_loss
         elif gan_mode == "vanilla":
             self.loss = nn.BCEWithLogitsLoss()
         elif gan_mode in ["wgangp"]:
