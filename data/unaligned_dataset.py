@@ -29,7 +29,8 @@ def correct_plane(image):
     A = np.column_stack((np.ones(Z.ravel().size), X.ravel(), Y.ravel()))
     c, resid, rank, sigma = np.linalg.lstsq(A, Z.ravel(), rcond=-1)
     image -= c[0] * np.ones(image.shape) + c[1] * X0 + c[2] * Y0
-    return image
+    std = image.std()
+    return image / std
 
 
 def normalize_min_max(data, R=1.0):
@@ -172,8 +173,7 @@ class UnalignedDataset(BaseDataset):
             self.B_size = len(self.B_paths)
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
-
-        # b = normalize_min_max(b)
+        b = correct_plane(b)
         try:
             B_img = Image.fromarray(b)
         except:
@@ -189,6 +189,7 @@ class UnalignedDataset(BaseDataset):
                 self.B_size = len(self.B_paths)
                 B_path = random.choice(self.B_paths)
                 b = -np.load(B_path)
+            b = correct_plane(b)
             B_img = Image.fromarray(b)
 
         A = self.transform_A(A_img)
