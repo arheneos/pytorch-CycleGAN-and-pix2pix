@@ -219,6 +219,18 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
     return net
 
 
+def softsign_l1_loss(pred, target):
+    """
+    범위를 모르는 데이터를 [0, 1] 혹은 [-1, 1] 근처로 부드럽게 매핑하여
+    L1 손실을 계산합니다.
+    """
+    # Softsign을 통해 데이터를 [-1, 1] 범위로 압축
+    # 입력이 10이면 10/11 = 0.909, 100이면 100/101 = 0.99
+    s_pred = F.softsign(pred)
+    s_target = F.softsign(target)
+
+    return F.l1_loss(s_pred, s_target)
+
 class StructuralLoss(nn.Module):
     def __init__(self, alpha=0.84):
         super(StructuralLoss, self).__init__()
@@ -259,7 +271,7 @@ class GANLoss(nn.Module):
         self.register_buffer("fake_label", torch.tensor(target_fake_label))
         self.gan_mode = gan_mode
         if gan_mode == "lsgan":
-            self.loss = nn.MSELoss()
+            self.loss = softsign_l1_loss
         elif gan_mode == "vanilla":
             self.loss = nn.BCEWithLogitsLoss()
         elif gan_mode in ["wgangp"]:
