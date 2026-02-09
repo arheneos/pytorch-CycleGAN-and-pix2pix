@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.nn.utils.spectral_norm import spectral_norm
 from pytorch_msssim import ssim, ms_ssim
 
+
 ###############################################################################
 # Helper Functions
 ###############################################################################
@@ -219,16 +220,15 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
     return net
 
 
-def softsign_l1_loss(pred, target):
-    """
-    범위를 모르는 데이터를 [0, 1] 혹은 [-1, 1] 근처로 부드럽게 매핑하여
-    L1 손실을 계산합니다.
-    """
-    # Softsign을 통해 데이터를 [-1, 1] 범위로 압축
-    # 입력이 10이면 10/11 = 0.909, 100이면 100/101 = 0.99
-    s_pred = torch.log1p(F.softplus(pred))
-    s_target = torch.log1p(F.softplus(target))
+def sensor_identity_loss(pred, target, scale=5.0):
+    # 데이터를 변환하는 게 아니라, 비교할 때만 스케일을 조정
+    # scale=5.0은 데이터의 STD 근처로 잡는 것이 수치적으로 가장 안정적입니다.
+    s_pred = F.softsign(pred / scale)
+    s_target = F.softsign(target / scale)
+
+    # L1은 미세한 신호 차이를 잘 잡아내고, softsign은 아웃라이어 폭주를 막습니다.
     return F.l1_loss(s_pred, s_target)
+
 
 class StructuralLoss(nn.Module):
     def __init__(self, alpha=0.84):
@@ -244,6 +244,8 @@ class StructuralLoss(nn.Module):
         loss_ssim = 1 - ssim(img1_norm, img2_norm, data_range=1.0)
         loss_mse = self.mse(img1, img2)
         return self.alpha * loss_ssim + (1 - self.alpha) * loss_mse
+
+
 ##############################################################################
 # Classes
 ##############################################################################
@@ -270,7 +272,7 @@ class GANLoss(nn.Module):
         self.register_buffer("fake_label", torch.tensor(target_fake_label))
         self.gan_mode = gan_mode
         if gan_mode == "lsgan":
-            self.loss = softsign_l1_loss
+            self.loss = sensor_identity_loss
         elif gan_mode == "vanilla":
             self.loss = nn.BCEWithLogitsLoss()
         elif gan_mode in ["wgangp"]:
