@@ -96,15 +96,15 @@ class UnalignedDataset(BaseDataset):
             data = np.frombuffer(f.read(), dtype=np.float32)
 
         data = np.reshape(data[:120 * 120], (120, 120)).copy()
-        data = normalize_min_max(data)
+        # data = normalize_min_max(data)
         if not np.isfinite(data).all():
             A_path = random.choice(self.A_paths)
             data = np.reshape(data[:120 * 120], (120, 120)).copy()
-            data = normalize_min_max(data)
+            # data = normalize_min_max(data)
         if not np.isfinite(data).all():
             A_path = random.choice(self.A_paths)
             data = np.reshape(data[:120 * 120], (120, 120)).copy()
-            data = normalize_min_max(data)
+            # data = normalize_min_max(data)
 
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
@@ -148,7 +148,7 @@ class UnalignedDataset(BaseDataset):
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
 
-        b = normalize_min_max(b)
+        # b = normalize_min_max(b)
         try:
             B_img = Image.fromarray(b)
         except:

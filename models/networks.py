@@ -226,13 +226,13 @@ class StructuralLoss(nn.Module):
         self.mse = nn.MSELoss()
 
     def forward(self, img1, img2):
-        # 1 - SSIM을 하면 손실(Loss) 형태가 됩니다 (값이 작을수록 좋음)
-        loss_ssim = 1 - ssim(img1, img2)
+        img1, img2 = img1.float(), img2.float()
+        # combined = torch.cat([img1.detach(), img2.detach()], dim=0)
+        img1_norm = (F.softsign(img1) + 1.0) / 2.0
+        img2_norm = (F.softsign(img2) + 1.0) / 2.0
+        loss_ssim = 1 - ssim(img1_norm, img2_norm, data_range=1.0)
         loss_mse = self.mse(img1, img2)
-
-        # 복합 손실 계산
         return self.alpha * loss_ssim + (1 - self.alpha) * loss_mse
-
 ##############################################################################
 # Classes
 ##############################################################################
@@ -569,7 +569,7 @@ class AttnGenerator(nn.Module):
             nn.InstanceNorm2d(dim1 // 2),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(dim1 // 2, out_channels, 3, padding=1, padding_mode='replicate'),
-            nn.Tanh()
+            # nn.Tanh()
         )
         self.final.apply(init_weights_kaiming)
 
