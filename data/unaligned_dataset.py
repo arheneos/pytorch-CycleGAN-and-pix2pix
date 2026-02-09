@@ -7,6 +7,31 @@ import random
 import numpy as np
 import tqdm
 
+
+def correct_plane(image):
+    """
+    Correct the image by subtracting a fitted 2D-plane on the data
+
+    Parameters
+    ----------
+    inline : bool
+        If True the data of the current image will be updated otherwise a new image is created
+    mask : None or 2D numpy array
+        If not None define on which pixels the data should be taken.
+    """
+    x = np.arange(image.shape[1])
+    y = np.arange(image.shape[0])
+    X0, Y0 = np.meshgrid(x, y)
+    Z0 = image
+    X = X0
+    Y = Y0
+    Z = Z0
+    A = np.column_stack((np.ones(Z.ravel().size), X.ravel(), Y.ravel()))
+    c, resid, rank, sigma = np.linalg.lstsq(A, Z.ravel(), rcond=-1)
+    image -= c[0] * np.ones(image.shape) + c[1] * X0 + c[2] * Y0
+    return image
+
+
 def normalize_min_max(data, R=1.0):
     """
     데이터를 [-R, R] 범위로 Min-Max 정규화 (기본 R=1.0)
@@ -96,15 +121,15 @@ class UnalignedDataset(BaseDataset):
             data = np.frombuffer(f.read(), dtype=np.float32)
 
         data = np.reshape(data[:120 * 120], (120, 120)).copy()
-        # data = normalize_min_max(data)
+        data = correct_plane(data)
         if not np.isfinite(data).all():
             A_path = random.choice(self.A_paths)
             data = np.reshape(data[:120 * 120], (120, 120)).copy()
-            # data = normalize_min_max(data)
+            data = correct_plane(data)
         if not np.isfinite(data).all():
             A_path = random.choice(self.A_paths)
             data = np.reshape(data[:120 * 120], (120, 120)).copy()
-            # data = normalize_min_max(data)
+            data = correct_plane(data)
 
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
