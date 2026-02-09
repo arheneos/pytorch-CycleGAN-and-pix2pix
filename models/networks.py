@@ -576,13 +576,13 @@ class AttnGenerator(nn.Module):
         # Final: concat with input image (like you already do)
         # ----------------
         self.final = nn.Sequential(
-            nn.Conv2d(dim1 + in_channels, dim1 // 2, 3, padding=1, padding_mode='replicate'),
+            nn.Conv2d(dim1, dim1 // 2, 3, padding=1, padding_mode='replicate'),
             nn.InstanceNorm2d(dim1 // 2),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(dim1 // 2, out_channels, 3, padding=1, padding_mode='replicate'),
             # nn.Tanh()
         )
-        nn.init.constant_(self.final[-1].weight, 0.01)
+        nn.init.constant_(self.final[-1].weight, 0.0001)
         nn.init.constant_(self.final[-1].bias, 0.0)
 
     def forward(self, x):
@@ -606,7 +606,7 @@ class AttnGenerator(nn.Module):
         x = self.fuse2(x)  # (B, dim1, H, W)
 
         # Final: concat with original input (optional but you already had it)
-        x = torch.cat([x, img], dim=1)  # (B, dim1+in_channels, H, W)
+        # x = torch.cat([x, img], dim=1)  # (B, dim1+in_channels, H, W)
         x = self.final(x)
 
         return x
