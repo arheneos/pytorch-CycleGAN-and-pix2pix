@@ -131,6 +131,8 @@ class UnalignedDataset(BaseDataset):
             A_path = random.choice(self.A_paths)
             data = np.reshape(data[:120 * 120], (120, 120)).copy()
             data = correct_plane(data)
+        data = np.clip(data, -30, 30)
+        data = data / 5.5
 
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
@@ -174,6 +176,7 @@ class UnalignedDataset(BaseDataset):
             B_path = random.choice(self.B_paths)
             b = -np.load(B_path)
         b = correct_plane(b)
+        b = b / 5.5
         try:
             B_img = Image.fromarray(b)
         except:
@@ -190,6 +193,7 @@ class UnalignedDataset(BaseDataset):
                 B_path = random.choice(self.B_paths)
                 b = -np.load(B_path)
             b = correct_plane(b)
+            b = b / 5.5
             B_img = Image.fromarray(b)
 
         A = self.transform_A(A_img)
