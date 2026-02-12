@@ -1,5 +1,8 @@
 import glob
 import os
+
+import cv2
+
 from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset
 from PIL import Image
@@ -121,19 +124,8 @@ class UnalignedDataset(BaseDataset):
         with open(A_path, 'rb') as f:
             data = np.frombuffer(f.read(), dtype=np.float32)
 
-        data = np.reshape(data[:120 * 120], (120, 120)).copy()
-        data = correct_plane(data)
-        if not np.isfinite(data).all():
-            A_path = random.choice(self.A_paths)
-            data = np.reshape(data[:120 * 120], (120, 120)).copy()
-            data = correct_plane(data)
-        if not np.isfinite(data).all():
-            A_path = random.choice(self.A_paths)
-            data = np.reshape(data[:120 * 120], (120, 120)).copy()
-            data = correct_plane(data)
-        data = np.clip(data, -30, 30)
-        data = data / 5.5
-
+        data = np.reshape(data[120 * 120:], (480, 480)).copy()
+        data = cv2.resize(data, (120, 120), interpolation=cv2.INTER_LINEAR)
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
         if not np.isfinite(b).all():
