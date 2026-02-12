@@ -76,24 +76,7 @@ class UnalignedDataset(BaseDataset):
 
         self.A_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/train/*.bin'))  # load images from '/path/to/data/trainA'
         B_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/Real/*.npy'))  # load images from '/path/to/data/trainB'
-
-        self.B_paths = []
-        for single in tqdm.tqdm(B_paths):
-            data = -np.load(single).copy()
-            h, w = data.shape
-            data = data - np.mean(data)
-            if h < 100 and w < 100:
-                continue
-            dR = np.diff(data, axis=1)  # row-wise gradient
-            dC = np.diff(data, axis=0)  # column-wise gradient
-            std_r = np.std(dR)
-            std_c = np.std(dC)
-            ratio = std_c / (std_r + 1e-12)  # 방지용 epsilon
-            if ratio < 10 and data.std() > 50:
-                if not np.isfinite(data).all():
-                    continue
-                self.B_paths.append(single)
-
+        self.B_paths = B_paths
         self.A_size = len(self.A_paths)  # get the size of dataset A
         self.B_size = len(self.B_paths)  # get the size of dataset B
         btoA = self.opt.direction == "BtoA"
@@ -124,8 +107,17 @@ class UnalignedDataset(BaseDataset):
         with open(A_path, 'rb') as f:
             data = np.frombuffer(f.read(), dtype=np.float32)
 
-        data = np.reshape(data[120 * 120:], (480, 480)).copy()
-        data = cv2.resize(data, (120, 120), interpolation=cv2.INTER_LINEAR)
+        data = np.reshape(data[:120 * 120], (120, 120)).copy()
+        data = correct_plane(data)
+        if not np.isfinite(data).all():
+            A_path = random.choice(self.A_paths)
+            data = np.reshape(data[:120 * 120], (120, 120)).copy()
+            data = correct_plane(data)
+        if not np.isfinite(data).all():
+            A_path = random.choice(self.A_paths)
+            data = np.reshape(data[:120 * 120], (120, 120)).copy()
+            data = correct_plane(data)
+        data = np.clip(data, -30, 30)
         data = data / 5.5
 
         A_img = Image.fromarray(data)
