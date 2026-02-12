@@ -76,7 +76,24 @@ class UnalignedDataset(BaseDataset):
 
         self.A_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/train/*.bin'))  # load images from '/path/to/data/trainA'
         B_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/Real/*.npy'))  # load images from '/path/to/data/trainB'
-        self.B_paths = B_paths
+
+        self.B_paths = []
+        for single in tqdm.tqdm(B_paths):
+            data = -np.load(single).copy()
+            h, w = data.shape
+            data = data - np.mean(data)
+            if h < 100 and w < 100:
+                continue
+            dR = np.diff(data, axis=1)  # row-wise gradient
+            dC = np.diff(data, axis=0)  # column-wise gradient
+            std_r = np.std(dR)
+            std_c = np.std(dC)
+            ratio = std_c / (std_r + 1e-12)  # 방지용 epsilon
+            if ratio < 10 and data.std() > 50:
+                if not np.isfinite(data).all():
+                    continue
+                self.B_paths.append(single)
+
         self.A_size = len(self.A_paths)  # get the size of dataset A
         self.B_size = len(self.B_paths)  # get the size of dataset B
         btoA = self.opt.direction == "BtoA"
