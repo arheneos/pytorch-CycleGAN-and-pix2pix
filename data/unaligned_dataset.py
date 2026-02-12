@@ -126,6 +126,8 @@ class UnalignedDataset(BaseDataset):
 
         data = np.reshape(data[120 * 120:], (480, 480)).copy()
         data = cv2.resize(data, (120, 120), interpolation=cv2.INTER_LINEAR)
+        data = data / 5.5
+
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
         if not np.isfinite(b).all():
