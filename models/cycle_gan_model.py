@@ -7,7 +7,7 @@ from . import networks
 def robust_log_l1(pred, target):
     s_pred = torch.sign(pred) * torch.log1p(torch.abs(pred))
     s_target = torch.sign(target) * torch.log1p(torch.abs(target))
-    return torch.nn.functional.l1_loss(s_pred, s_target)
+    return torch.nn.functional.mse_loss(s_pred, s_target)
 
 
 class CycleGANModel(BaseModel):
@@ -99,8 +99,8 @@ class CycleGANModel(BaseModel):
             self.fake_B_pool = ImagePool(opt.pool_size)  # create image buffer to store previously generated images
             # define loss functions
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
-            self.criterionCycle = robust_log_l1
-            self.criterionIdt = robust_log_l1
+            self.criterionCycle = torch.nn.functional.mse_loss
+            self.criterionIdt = torch.nn.functional.mse_loss
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()),
                                                 lr=opt.lr, betas=(opt.beta1, 0.999))

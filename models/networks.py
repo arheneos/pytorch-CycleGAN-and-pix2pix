@@ -225,7 +225,7 @@ def robust_log_l1_loss(pred, target):
     # 물리 센서 데이터의 아웃라이어 영향을 로그 스케일로 감쇄
     s_pred = torch.sign(pred) * torch.log1p(torch.abs(pred))
     s_target = torch.sign(target) * torch.log1p(torch.abs(target))
-    return F.l1_loss(s_pred, s_target)
+    return F.mse_loss(s_pred, s_target)
 
 
 class StructuralLoss(nn.Module):
@@ -270,7 +270,7 @@ class GANLoss(nn.Module):
         self.register_buffer("fake_label", torch.tensor(target_fake_label))
         self.gan_mode = gan_mode
         if gan_mode == "lsgan":
-            self.loss = robust_log_l1_loss
+            self.loss = F.mse_loss
         elif gan_mode == "vanilla":
             self.loss = nn.BCEWithLogitsLoss()
         elif gan_mode in ["wgangp"]:
