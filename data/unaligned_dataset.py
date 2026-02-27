@@ -9,6 +9,7 @@ from PIL import Image
 import random
 import numpy as np
 import tqdm
+import h5py
 
 
 def correct_plane(image):
@@ -73,8 +74,11 @@ class UnalignedDataset(BaseDataset):
         BaseDataset.__init__(self, opt)
         self.dir_A = os.path.join(opt.dataroot, opt.phase + "A")  # create a path '/path/to/data/trainA'
         self.dir_B = os.path.join(opt.dataroot, opt.phase + "B")  # create a path '/path/to/data/trainB'
+        with h5py.File('/home/psdl/Workspace/SUNDAE_GAN/Master_Dataset_v1.h5', 'r') as f:
+            self.uids = list(f.keys())
+        self.file = h5py.File('/home/psdl/Workspace/SUNDAE_GAN/Master_Dataset_v1.h5', 'r')
 
-        self.A_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/train/*.bin'))  # load images from '/path/to/data/trainA'
+        self.A_paths = sorted([])  # load images from '/path/to/data/trainA'
         B_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/Real/*.npy'))  # load images from '/path/to/data/trainB'
 
         self.B_paths = []
@@ -94,7 +98,7 @@ class UnalignedDataset(BaseDataset):
                     continue
                 self.B_paths.append(single)
 
-        self.A_size = len(self.A_paths)  # get the size of dataset A
+        self.A_size = len(self.uids)  # get the size of dataset A
         self.B_size = len(self.B_paths)  # get the size of dataset B
         btoA = self.opt.direction == "BtoA"
         input_nc = self.opt.output_nc if btoA else self.opt.input_nc  # get the number of channels of input image
@@ -120,20 +124,9 @@ class UnalignedDataset(BaseDataset):
         else:  # randomize the index for domain B to avoid fixed pairs.
             index_B = random.randint(0, self.B_size - 1)
         B_path = self.B_paths[index_B]
-
-        with open(A_path, 'rb') as f:
-            data = np.frombuffer(f.read(), dtype=np.float32)
-
-        data = np.reshape(data[:120 * 120], (120, 120)).copy()
-        data = correct_plane(data)
-        if not np.isfinite(data).all():
-            A_path = random.choice(self.A_paths)
-            data = np.reshape(data[:120 * 120], (120, 120)).copy()
-            data = correct_plane(data)
-        if not np.isfinite(data).all():
-            A_path = random.choice(self.A_paths)
-            data = np.reshape(data[:120 * 120], (120, 120)).copy()
-            data = correct_plane(data)
+        uid = self.uids[index % self.A_size]
+        group = self.file[uid]
+        data = group['norm'][:]
         data = np.clip(data, -30, 30)
         data = data / 5.5
 
