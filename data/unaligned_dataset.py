@@ -118,7 +118,7 @@ class UnalignedDataset(BaseDataset):
             A_paths (str)    -- image paths
             B_paths (str)    -- image paths
         """
-        A_path = self.A_paths[index % self.A_size]  # make sure index is within then range
+        A_path = self.uids[index % self.A_size]  # make sure index is within then range
         if self.opt.serial_batches:  # make sure index is within then range
             index_B = index % self.B_size
         else:  # randomize the index for domain B to avoid fixed pairs.
