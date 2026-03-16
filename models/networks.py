@@ -163,7 +163,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
     norm_layer = get_norm_layer(norm_type=norm)
 
     if netG == "resnet_9blocks":
-        net = AttnGenerator(input_nc, output_nc, ngf=128)
+        net = ModernAttnGenerator(input_nc, output_nc, ngf=128)
     elif netG == "resnet_6blocks":
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == "unet_128":
@@ -610,6 +610,90 @@ class AttnGenerator(nn.Module):
         x = self.final(x)
 
         return x
+
+
+class ResidualBlock(nn.Module):
+    """표준적인 ResNet 블록에 Attention을 내장"""
+
+    def __init__(self, dim):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(dim, dim, 3),
+            nn.InstanceNorm2d(dim),
+            nn.ReLU(True),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(dim, dim, 3),
+            nn.InstanceNorm2d(dim)
+        )
+        self.attn = CBAMBlock(dim)  # 기존 사용하시던 CBAM 유지
+
+    def forward(self, x):
+        return x + self.attn(self.block(x))
+
+
+class ModernAttnGenerator(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1, ngf=64, n_blocks=6):
+        super().__init__()
+
+        # [Encoder] 깊이감을 주되, Spectral Norm으로 안정성 확보
+        self.begin = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(in_channels, ngf, 7),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+
+        # Downsampling (Strided Conv)
+        self.down1 = self._make_down_block(ngf, ngf * 2)  # 1/2
+        self.down2 = self._make_down_block(ngf * 2, ngf * 4)  # 1/4
+
+        # [Bottleneck] Residual + Attention Blocks
+        res_blocks = []
+        for _ in range(n_blocks):
+            res_blocks += [ResidualBlock(ngf * 4)]
+        self.bottleneck = nn.Sequential(*res_blocks)
+
+        # [Decoder] PixelShuffle을 이용한 정교한 업샘플링
+        self.up1 = self._make_up_block(ngf * 4, ngf * 2)  # 2/4 -> 1/2
+        self.up2 = self._make_up_block(ngf * 2, ngf)  # 1/2 -> 1
+
+        # [Final Layer]
+        self.final = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(ngf, out_channels, 7),
+            nn.Tanh()  # CycleGAN은 보통 -1 ~ 1 범위를 위해 Tanh 사용
+        )
+
+    def _make_down_block(self, in_f, out_f):
+        return nn.Sequential(
+            nn.Conv2d(in_f, out_f, 3, stride=2, padding=1),
+            nn.InstanceNorm2d(out_f),
+            nn.ReLU(True)
+        )
+
+    def _make_up_block(self, in_f, out_f):
+        # PixelShuffle은 채널을 4배로 늘려 해상도를 2배 키움
+        return nn.Sequential(
+            nn.Conv2d(in_f, out_f * 4, 3, padding=1),
+            nn.PixelShuffle(2),
+            nn.InstanceNorm2d(out_f),
+            nn.ReLU(True)
+        )
+
+    def forward(self, x):
+        # Skip Connection을 위한 리스트
+        d0 = self.begin(x)
+        d1 = self.down1(d0)
+        d2 = self.down2(d1)
+
+        b = self.bottleneck(d2)
+
+        # U-Net Skip Connection 적용 (Concat)
+        u1 = self.up1(b)
+        u2 = self.up2(u1 + d1)  # 단순 더하기 혹은 torch.cat 가능
+
+        return self.final(u2 + d0)
 
 
 class ResnetBlock(nn.Module):
