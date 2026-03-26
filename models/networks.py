@@ -206,7 +206,12 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
 
 
 def robust_log_l1_loss(pred, target):
-...
+    # sign(x) * log(1 + |x|) 적용
+    # 물리 센서 데이터의 아웃라이어 영향을 로그 스케일로 감쇄
+    s_pred = torch.sign(pred) * torch.log1p(torch.abs(pred))
+    s_target = torch.sign(target) * torch.log1p(torch.abs(target))
+    return F.mse_loss(s_pred, s_target)
+
 ##############################################################################
 # Classes
 ##############################################################################
