@@ -151,7 +151,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         input_nc (int) -- the number of channels in input images
         output_nc (int) -- the number of channels in output images
         ngf (int) -- the number of filters in the last conv layer
-        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256
+        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 | afm_optimized
         norm (str) -- the name of normalization layers used in the network: batch | instance | none
         use_dropout (bool) -- if use dropout layers.
         init_type (str)    -- the name of our initialization method.
@@ -162,8 +162,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
     net = None
     norm_layer = get_norm_layer(norm_type=norm)
 
-    if netG == "resnet_9blocks":
-        net = AttnGenerator(input_nc, output_nc, ngf=256)
+    if netG == "resnet_9blocks" or netG == "afm_optimized":
+        net = OptimizedAFMGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
     elif netG == "resnet_6blocks":
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == "unet_128":
@@ -181,34 +181,19 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
     Parameters:
         input_nc (int)     -- the number of channels in input images
         ndf (int)          -- the number of filters in the first conv layer
-        netD (str)         -- the architecture's name: basic | n_layers | pixel
+        netD (str)         -- the architecture's name: basic | n_layers | pixel | multiscale
         n_layers_D (int)   -- the number of conv layers in the discriminator; effective when netD=='n_layers'
         norm (str)         -- the type of normalization layers used in the network.
         init_type (str)    -- the name of the initialization method.
         init_gain (float)  -- scaling factor for normal, xavier and orthogonal.
 
     Returns a discriminator
-
-    Our current implementation provides three types of discriminators:
-        [basic]: 'PatchGAN' classifier described in the original pix2pix paper.
-        It can classify whether 70×70 overlapping patches are real or fake.
-        Such a patch-level discriminator architecture has fewer parameters
-        than a full-image discriminator and can work on arbitrarily-sized images
-        in a fully convolutional fashion.
-
-        [n_layers]: With this mode, you can specify the number of conv layers in the discriminator
-        with the parameter <n_layers_D> (default=3 as used in [basic] (PatchGAN).)
-
-        [pixel]: 1x1 PixelGAN discriminator can classify whether a pixel is real or not.
-        It encourages greater color diversity but has no effect on spatial statistics.
-
-    The discriminator has been initialized by <init_net>. It uses Leakly RELU for non-linearity.
     """
     net = None
     norm_layer = get_norm_layer(norm_type=norm)
 
-    if netD == "basic":  # default PatchGAN classifier
-        net = NLayerDiscriminator(input_nc, ndf, n_layers=8, norm_layer=norm_layer)
+    if netD == "basic" or netD == "multiscale":
+        net = MultiscaleAFMDiscriminator(input_nc, ndf, n_layers=n_layers_D, norm_layer=norm_layer)
     elif netD == "n_layers":  # more options
         net = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer)
     elif netD == "pixel":  # classify if each pixel is real or fake
@@ -221,32 +206,234 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
 
 
 def robust_log_l1_loss(pred, target):
+...
+##############################################################################
+# Classes
+##############################################################################
+class MultiscaleAFMDiscriminator(nn.Module):
+    """
+    Multiscale Discriminator for AFM images.
+    Uses multiple PatchGANs at different scales to capture both 
+    fine-grained noise/texture and larger structural artifacts (like scan lines).
+    Uses Spectral Normalization for stability.
+    """
+    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.InstanceNorm2d, num_D=2):
+        super(MultiscaleAFMDiscriminator, self).__init__()
+        self.num_D = num_D
+        
+        for i in range(num_D):
+            netD = NLayerDiscriminatorOptimized(input_nc, ndf, n_layers, norm_layer)
+            setattr(self, f"layer{i}", netD)
+            
+        self.downsample = nn.AvgPool2d(3, stride=2, padding=[1, 1], count_include_pad=False)
+
+    def forward(self, input):
+        result = []
+        input_downsampled = input
+        for i in range(self.num_D):
+            model = getattr(self, f"layer{i}")
+            result.append(model(input_downsampled))
+            if i < self.num_D - 1:
+                input_downsampled = self.downsample(input_downsampled)
+        return result
+
+
+class NLayerDiscriminatorOptimized(nn.Module):
+    """Optimized PatchGAN discriminator with Spectral Norm"""
+
+    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.InstanceNorm2d):
+        super(NLayerDiscriminatorOptimized, self).__init__()
+        
+        kw = 4
+        padw = 1
+        sequence = [
+            spectral_norm(nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw)), 
+            nn.LeakyReLU(0.2, True)
+        ]
+        
+        nf_mult = 1
+        nf_mult_prev = 1
+        for n in range(1, n_layers):
+            nf_mult_prev = nf_mult
+            nf_mult = min(2 ** n, 8)
+            sequence += [
+                spectral_norm(nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw)),
+                norm_layer(ndf * nf_mult), 
+                nn.LeakyReLU(0.2, True)
+            ]
+
+        nf_mult_prev = nf_mult
+        nf_mult = min(2 ** n_layers, 8)
+        sequence += [
+            spectral_norm(nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw)),
+            norm_layer(ndf * nf_mult), 
+            nn.LeakyReLU(0.2, True)
+        ]
+
+        sequence += [spectral_norm(nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw))]
+        self.model = nn.Sequential(*sequence)
+
+    def forward(self, input):
+        return self.model(input)
+
+
+def robust_log_l1_loss(pred, target):
     # sign(x) * log(1 + |x|) 적용
     # 물리 센서 데이터의 아웃라이어 영향을 로그 스케일로 감쇄
     s_pred = torch.sign(pred) * torch.log1p(torch.abs(pred))
     s_target = torch.sign(target) * torch.log1p(torch.abs(target))
-    return F.mse_loss(s_pred, s_target)
+    return F.l1_loss(s_pred, s_target)
 
 
 class StructuralLoss(nn.Module):
     def __init__(self, alpha=0.84):
         super(StructuralLoss, self).__init__()
         self.alpha = alpha  # MS-SSIM과 L1/MSE 사이의 밸런스 가중치
-        self.mse = nn.MSELoss()
+        self.l1 = nn.L1Loss()
 
     def forward(self, img1, img2):
         img1, img2 = img1.float(), img2.float()
-        # combined = torch.cat([img1.detach(), img2.detach()], dim=0)
-        img1_norm = (F.softsign(img1) + 1.0) / 2.0
-        img2_norm = (F.softsign(img2) + 1.0) / 2.0
-        loss_ssim = 1 - ssim(img1_norm, img2_norm, data_range=1.0)
-        loss_mse = self.mse(img1, img2)
-        return self.alpha * loss_ssim + (1 - self.alpha) * loss_mse
+        # AFM 데이터 특성상 정규화가 중요함
+        img1_norm = (torch.tanh(img1) + 1.0) / 2.0
+        img2_norm = (torch.tanh(img2) + 1.0) / 2.0
+        
+        # ssim은 [0, 1] 범위에서 동작
+        loss_ssim = 1 - ssim(img1_norm, img2_norm, data_range=1.0, size_average=True)
+        loss_l1 = self.l1(img1, img2)
+        return self.alpha * loss_ssim + (1 - self.alpha) * loss_l1
 
 
 ##############################################################################
 # Classes
 ##############################################################################
+class ECABlock(nn.Module):
+    """Efficient Channel Attention module"""
+    def __init__(self, channels, b=1, gamma=2):
+        super(ECABlock, self).__init__()
+        kernel_size = int(abs((math.log(channels, 2) + b) / gamma))
+        kernel_size = kernel_size if kernel_size % 2 else kernel_size + 1
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        y = self.avg_pool(x)
+        y = self.conv(y.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+        y = self.sigmoid(y)
+        return x * y.expand_as(x)
+
+
+class ResBlockOptimized(nn.Module):
+    def __init__(self, dim, norm_layer=nn.InstanceNorm2d, use_dropout=False):
+        super(ResBlockOptimized, self).__init__()
+        conv_block = [
+            nn.ReflectionPad2d(1),
+            spectral_norm(nn.Conv2d(dim, dim, kernel_size=3, bias=True)),
+            norm_layer(dim),
+            nn.ReLU(True)
+        ]
+        if use_dropout:
+            conv_block += [nn.Dropout(0.5)]
+        conv_block += [
+            nn.ReflectionPad2d(1),
+            spectral_norm(nn.Conv2d(dim, dim, kernel_size=3, bias=True)),
+            norm_layer(dim)
+        ]
+        self.conv_block = nn.Sequential(*conv_block)
+        self.eca = ECABlock(dim)
+
+    def forward(self, x):
+        return x + self.eca(self.conv_block(x))
+
+
+class OptimizedAFMGenerator(nn.Module):
+    """
+    Optimized Generator for AFM images.
+    Combines ResNet backbone with U-Net skip connections and ECA attention.
+    Uses Spectral Normalization for stability and PixelShuffle for upsampling.
+    """
+    def __init__(self, in_channels=1, out_channels=1, ngf=64, n_blocks=9):
+        super(OptimizedAFMGenerator, self). __init__()
+        
+        # Initial Stem
+        self.begin = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            spectral_norm(nn.Conv2d(in_channels, ngf, 7, bias=True)),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+
+        # Encoder
+        self.down1 = nn.Sequential(
+            spectral_norm(nn.Conv2d(ngf, ngf * 2, 3, stride=2, padding=1, bias=True)),
+            nn.InstanceNorm2d(ngf * 2),
+            nn.ReLU(True)
+        )
+        self.down2 = nn.Sequential(
+            spectral_norm(nn.Conv2d(ngf * 2, ngf * 4, 3, stride=2, padding=1, bias=True)),
+            nn.InstanceNorm2d(ngf * 4),
+            nn.ReLU(True)
+        )
+
+        # Bottleneck
+        blocks = []
+        for _ in range(n_blocks):
+            blocks += [ResBlockOptimized(ngf * 4)]
+        self.bottleneck = nn.Sequential(*blocks)
+
+        # Decoder with Skip Connections (Concat)
+        # PixelShuffle upsampling
+        self.up1 = nn.Sequential(
+            spectral_norm(nn.Conv2d(ngf * 4, ngf * 2 * 4, 3, padding=1, bias=True)),
+            nn.PixelShuffle(2),
+            nn.InstanceNorm2d(ngf * 2),
+            nn.ReLU(True)
+        )
+        self.fuse1 = nn.Sequential(
+            spectral_norm(nn.Conv2d(ngf * 2 + ngf * 2, ngf * 2, 3, padding=1, bias=True)),
+            nn.InstanceNorm2d(ngf * 2),
+            nn.ReLU(True)
+        )
+
+        self.up2 = nn.Sequential(
+            spectral_norm(nn.Conv2d(ngf * 2, ngf * 4, 3, padding=1, bias=True)),
+            nn.PixelShuffle(2),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+        self.fuse2 = nn.Sequential(
+            spectral_norm(nn.Conv2d(ngf + ngf, ngf, 3, padding=1, bias=True)),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+
+        # Final
+        self.final = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(ngf, out_channels, 7),
+            # nn.Tanh() # Tanh is optional depending on data range, but standard for CycleGAN
+        )
+
+    def forward(self, x):
+        # Encoder + Skips
+        s0 = self.begin(x)
+        s1 = self.down1(s0)
+        x = self.down2(s1)
+
+        # Bottleneck
+        x = self.bottleneck(x)
+
+        # Decoder + Skip Concat
+        x = self.up1(x)
+        x = torch.cat([x, s1], dim=1)
+        x = self.fuse1(x)
+
+        x = self.up2(x)
+        x = torch.cat([x, s0], dim=1)
+        x = self.fuse2(x)
+
+        return self.final(x)
+
 class GANLoss(nn.Module):
     """Define different GAN objectives.
 

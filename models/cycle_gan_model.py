@@ -99,8 +99,9 @@ class CycleGANModel(BaseModel):
             self.fake_B_pool = ImagePool(opt.pool_size)  # create image buffer to store previously generated images
             # define loss functions
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
-            self.criterionCycle = torch.nn.functional.mse_loss
-            self.criterionIdt = torch.nn.functional.mse_loss
+            # AFM 데이터의 구조 보존을 위해 StructuralLoss(SSIM + L1) 사용
+            self.criterionCycle = networks.StructuralLoss(alpha=0.5).to(self.device)
+            self.criterionIdt = networks.StructuralLoss(alpha=0.5).to(self.device)
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()),
                                                 lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -153,11 +154,25 @@ class CycleGANModel(BaseModel):
         """
         # Real
         pred_real = netD(real)
-        loss_D_real = self.criterionGAN(pred_real, True)
+        if isinstance(pred_real, list):  # Multiscale case
+            loss_D_real = 0
+            for pred in pred_real:
+                loss_D_real += self.criterionGAN(pred, True)
+            loss_D_real /= len(pred_real)
+        else:
+            loss_D_real = self.criterionGAN(pred_real, True)
+
         # Fake
         pred_fake = netD(fake.detach())
-        loss_D_fake = self.criterionGAN(pred_fake, False)
-        # Combined loss (backward is handled in optimize_parameters to allow NaN/Inf skipping)
+        if isinstance(pred_fake, list):  # Multiscale case
+            loss_D_fake = 0
+            for pred in pred_fake:
+                loss_D_fake += self.criterionGAN(pred, False)
+            loss_D_fake /= len(pred_fake)
+        else:
+            loss_D_fake = self.criterionGAN(pred_fake, False)
+
+        # Combined loss
         loss_D = (loss_D_real + loss_D_fake) * 0.5
         loss_D.backward()
         return loss_D
@@ -188,8 +203,23 @@ class CycleGANModel(BaseModel):
             self.loss_idt_A, self.loss_idt_B = 0, 0
 
         # GAN loss
-        self.loss_G_A = self.criterionGAN(self.netD_A(self.fake_B), True)
-        self.loss_G_B = self.criterionGAN(self.netD_B(self.fake_A), True)
+        pred_fake_B = self.netD_A(self.fake_B)
+        if isinstance(pred_fake_B, list):
+            self.loss_G_A = 0
+            for pred in pred_fake_B:
+                self.loss_G_A += self.criterionGAN(pred, True)
+            self.loss_G_A /= len(pred_fake_B)
+        else:
+            self.loss_G_A = self.criterionGAN(pred_fake_B, True)
+
+        pred_fake_A = self.netD_B(self.fake_A)
+        if isinstance(pred_fake_A, list):
+            self.loss_G_B = 0
+            for pred in pred_fake_A:
+                self.loss_G_B += self.criterionGAN(pred, True)
+            self.loss_G_B /= len(pred_fake_A)
+        else:
+            self.loss_G_B = self.criterionGAN(pred_fake_A, True)
         # Cycle loss
         self.loss_cycle_A = self.criterionCycle(self.rec_A, self.real_A) * lambda_A
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
