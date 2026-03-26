@@ -328,12 +328,13 @@ class ECABlock(nn.Module):
         return x * y.expand_as(x)
 
 
-class ResBlockOptimized(nn.Module):
+class ResBlockPlain(nn.Module):
+    """Simple ResNet block without Spectral Norm or Attention to avoid artifacts."""
     def __init__(self, dim, norm_layer=nn.InstanceNorm2d, use_dropout=False):
-        super(ResBlockOptimized, self).__init__()
+        super(ResBlockPlain, self).__init__()
         conv_block = [
             nn.ReflectionPad2d(1),
-            spectral_norm(nn.Conv2d(dim, dim, kernel_size=3, bias=True)),
+            nn.Conv2d(dim, dim, kernel_size=3, bias=True),
             norm_layer(dim),
             nn.ReLU(True)
         ]
@@ -341,41 +342,40 @@ class ResBlockOptimized(nn.Module):
             conv_block += [nn.Dropout(0.5)]
         conv_block += [
             nn.ReflectionPad2d(1),
-            spectral_norm(nn.Conv2d(dim, dim, kernel_size=3, bias=True)),
+            nn.Conv2d(dim, dim, kernel_size=3, bias=True),
             norm_layer(dim)
         ]
         self.conv_block = nn.Sequential(*conv_block)
-        self.eca = ECABlock(dim)
 
     def forward(self, x):
-        return x + self.eca(self.conv_block(x))
+        return x + self.conv_block(x)
 
 
 class OptimizedAFMGenerator(nn.Module):
     """
-    Optimized Generator for AFM images.
-    Combines ResNet backbone with U-Net skip connections and ECA attention.
-    Uses Spectral Normalization for stability and PixelShuffle for upsampling.
+    Smooth Generator for AFM images (Checkerboard-free).
+    Uses Bilinear Upsampling + Conv instead of PixelShuffle.
+    Avoids Spectral Norm and Attention in the Generator to prevent periodic artifacts.
     """
     def __init__(self, in_channels=1, out_channels=1, ngf=64, n_blocks=9):
-        super(OptimizedAFMGenerator, self). __init__()
+        super(OptimizedAFMGenerator, self).__init__()
         
         # Initial Stem
         self.begin = nn.Sequential(
             nn.ReflectionPad2d(3),
-            spectral_norm(nn.Conv2d(in_channels, ngf, 7, bias=True)),
+            nn.Conv2d(in_channels, ngf, 7, bias=True),
             nn.InstanceNorm2d(ngf),
             nn.ReLU(True)
         )
 
         # Encoder
         self.down1 = nn.Sequential(
-            spectral_norm(nn.Conv2d(ngf, ngf * 2, 3, stride=2, padding=1, bias=True)),
+            nn.Conv2d(ngf, ngf * 2, 3, stride=2, padding=1, bias=True),
             nn.InstanceNorm2d(ngf * 2),
             nn.ReLU(True)
         )
         self.down2 = nn.Sequential(
-            spectral_norm(nn.Conv2d(ngf * 2, ngf * 4, 3, stride=2, padding=1, bias=True)),
+            nn.Conv2d(ngf * 2, ngf * 4, 3, stride=2, padding=1, bias=True),
             nn.InstanceNorm2d(ngf * 4),
             nn.ReLU(True)
         )
@@ -383,31 +383,24 @@ class OptimizedAFMGenerator(nn.Module):
         # Bottleneck
         blocks = []
         for _ in range(n_blocks):
-            blocks += [ResBlockOptimized(ngf * 4)]
+            blocks += [ResBlockPlain(ngf * 4)]
         self.bottleneck = nn.Sequential(*blocks)
 
-        # Decoder with Skip Connections (Concat)
-        # PixelShuffle upsampling
-        self.up1 = nn.Sequential(
-            spectral_norm(nn.Conv2d(ngf * 4, ngf * 2 * 4, 3, padding=1, bias=True)),
-            nn.PixelShuffle(2),
-            nn.InstanceNorm2d(ngf * 2),
-            nn.ReLU(True)
-        )
+        # Decoder with Bilinear Upsampling + Skip Connections
+        # up1: 1/4 -> 1/2
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.fuse1 = nn.Sequential(
-            spectral_norm(nn.Conv2d(ngf * 2 + ngf * 2, ngf * 2, 3, padding=1, bias=True)),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 4 + ngf * 2, ngf * 2, 3, bias=True),
             nn.InstanceNorm2d(ngf * 2),
             nn.ReLU(True)
         )
 
-        self.up2 = nn.Sequential(
-            spectral_norm(nn.Conv2d(ngf * 2, ngf * 4, 3, padding=1, bias=True)),
-            nn.PixelShuffle(2),
-            nn.InstanceNorm2d(ngf),
-            nn.ReLU(True)
-        )
+        # up2: 1/2 -> 1
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.fuse2 = nn.Sequential(
-            spectral_norm(nn.Conv2d(ngf + ngf, ngf, 3, padding=1, bias=True)),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 2 + ngf, ngf, 3, bias=True),
             nn.InstanceNorm2d(ngf),
             nn.ReLU(True)
         )
@@ -416,8 +409,28 @@ class OptimizedAFMGenerator(nn.Module):
         self.final = nn.Sequential(
             nn.ReflectionPad2d(3),
             nn.Conv2d(ngf, out_channels, 7),
-            # nn.Tanh() # Tanh is optional depending on data range, but standard for CycleGAN
+            nn.Tanh()
         )
+
+    def forward(self, x):
+        # Encoder + Skips
+        s0 = self.begin(x)
+        s1 = self.down1(s0)
+        x = self.down2(s1)
+
+        # Bottleneck
+        x = self.bottleneck(x)
+
+        # Decoder + Skip Concat
+        x = self.up1(x)
+        x = torch.cat([x, s1], dim=1)
+        x = self.fuse1(x)
+
+        x = self.up2(x)
+        x = torch.cat([x, s0], dim=1)
+        x = self.fuse2(x)
+
+        return self.final(x)
 
     def forward(self, x):
         # Encoder + Skips
