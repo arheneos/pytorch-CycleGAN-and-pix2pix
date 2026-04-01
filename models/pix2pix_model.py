@@ -1,6 +1,31 @@
 import torch
 from .base_model import BaseModel
 from . import networks
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class SpectralLoss(nn.Module):
+    """Directly penalizes periodic artifacts by comparing FFT magnitude spectra."""
+
+    def __init__(self, alpha=1.0):
+        super().__init__()
+        self.alpha = alpha
+
+    def forward(self, x, y):
+        # x, y: [B, 1, H, W]
+        # Calculate FFT magnitude
+        def get_mag(img):
+            f = torch.fft.fft2(img.squeeze(1) + 1e-8)
+            fshift = torch.fft.fftshift(f, dim=(-2, -1))
+            return torch.abs(fshift)
+
+        mag_x = get_mag(x)
+        mag_y = get_mag(y)
+
+        # Log-scale L1 loss on spectra to emphasize high-frequency peaks
+        loss = F.l1_loss(torch.log1p(mag_x), torch.log1p(mag_y))
+        return self.alpha * loss
 
 
 class Pix2PixModel(BaseModel):
@@ -64,6 +89,7 @@ class Pix2PixModel(BaseModel):
             # define loss functions
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # move to the device for custom loss
             self.criterionL1 = torch.nn.L1Loss()
+            self.spec_loss = SpectralLoss()
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -109,8 +135,9 @@ class Pix2PixModel(BaseModel):
         self.loss_G_GAN = self.criterionGAN(pred_fake, True)
         # Second, G(A) = B
         self.loss_G_L1 = self.criterionL1(self.fake_B, self.real_B) * self.opt.lambda_L1
+        self.loss_G_Spec = self.spec_loss(self.fake_B, self.real_B)
         # combine loss and calculate gradients
-        self.loss_G = self.loss_G_GAN + self.loss_G_L1
+        self.loss_G = self.loss_G_GAN + self.loss_G_L1 + self.loss_G_Spec
         self.loss_G.backward()
 
     def optimize_parameters(self):
