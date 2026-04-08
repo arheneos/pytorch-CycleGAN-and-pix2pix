@@ -409,7 +409,6 @@ class OptimizedAFMGenerator(nn.Module):
         self.final = nn.Sequential(
             nn.ReflectionPad2d(3),
             nn.Conv2d(ngf, out_channels, 7),
-            nn.Tanh()
         )
 
     def forward(self, x):
