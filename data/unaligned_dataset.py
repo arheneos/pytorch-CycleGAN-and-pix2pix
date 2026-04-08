@@ -33,8 +33,7 @@ def correct_plane(image):
     A = np.column_stack((np.ones(Z.ravel().size), X.ravel(), Y.ravel()))
     c, resid, rank, sigma = np.linalg.lstsq(A, Z.ravel(), rcond=-1)
     image -= c[0] * np.ones(image.shape) + c[1] * X0 + c[2] * Y0
-    std = image.std()
-    return image / std
+    return image - np.min(image)
 
 
 def normalize_min_max(data, R=1.0):
@@ -86,17 +85,13 @@ class UnalignedDataset(BaseDataset):
             data = -np.load(single).copy()
             h, w = data.shape
             data = data - np.mean(data)
-            if h < 100 and w < 100:
+            if h < 100 or w < 100:
                 continue
-            dR = np.diff(data, axis=1)  # row-wise gradient
-            dC = np.diff(data, axis=0)  # column-wise gradient
-            std_r = np.std(dR)
-            std_c = np.std(dC)
-            ratio = std_c / (std_r + 1e-12)  # 방지용 epsilon
-            if ratio < 10 and data.std() > 50:
-                if not np.isfinite(data).all():
-                    continue
-                self.B_paths.append(single)
+            if np.isclose(np.std(data), 0):
+                continue
+            if not np.isfinite(data).all():
+                continue
+            self.B_paths.append(single)
 
         self.A_size = len(self.uids)  # get the size of dataset A
         self.B_size = len(self.B_paths)  # get the size of dataset B
@@ -127,71 +122,11 @@ class UnalignedDataset(BaseDataset):
         uid = self.uids[index % self.A_size]
         group = self.file[uid]
         data = group['norm'][:]
-        data = np.clip(data, -30, 30)
-        data = data / 5.5
-
+        data = data - np.min(data)
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
-        if not np.isfinite(b).all():
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if b.shape[0] < 64 or b.shape[1] < 64:
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if not np.isfinite(b).all():
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if b.shape[0] < 64 or b.shape[1] < 64:
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if not np.isfinite(b).all():
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if b.shape[0] < 64 or b.shape[1] < 64:
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-
-        if not np.isfinite(b).all():
-            self.B_paths = [x for x in self.B_paths if x != B_path]
-            self.B_size = len(self.B_paths)
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
         b = correct_plane(b)
-        b = b / 5.5
-        try:
-            B_img = Image.fromarray(b)
-        except:
-            B_path = random.choice(self.B_paths)
-            b = -np.load(B_path)
-            if not np.isfinite(b).all():
-                self.B_paths = [x for x in self.B_paths if x != B_path]
-                self.B_size = len(self.B_paths)
-                B_path = random.choice(self.B_paths)
-                b = -np.load(B_path)
-            if b.shape[0] < 64 or b.shape[1] < 64:
-                self.B_paths = [x for x in self.B_paths if x != B_path]
-                self.B_size = len(self.B_paths)
-                B_path = random.choice(self.B_paths)
-                b = -np.load(B_path)
-            b = correct_plane(b)
-            b = b / 5.5
-            B_img = Image.fromarray(b)
-
+        B_img = Image.fromarray(b)
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)
 
