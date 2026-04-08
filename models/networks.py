@@ -432,26 +432,6 @@ class OptimizedAFMGenerator(nn.Module):
 
         return self.final(x)
 
-    def forward(self, x):
-        # Encoder + Skips
-        s0 = self.begin(x)
-        s1 = self.down1(s0)
-        x = self.down2(s1)
-
-        # Bottleneck
-        x = self.bottleneck(x)
-
-        # Decoder + Skip Concat
-        x = self.up1(x)
-        x = torch.cat([x, s1], dim=1)
-        x = self.fuse1(x)
-
-        x = self.up2(x)
-        x = torch.cat([x, s0], dim=1)
-        x = self.fuse2(x)
-
-        return self.final(x)
-
 class GANLoss(nn.Module):
     """Define different GAN objectives.
 
