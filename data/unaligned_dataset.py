@@ -123,10 +123,10 @@ class UnalignedDataset(BaseDataset):
         group = self.file[uid]
         data = group['norm'][:]
         data = data - np.min(data)
-        A_img = Image.fromarray(data)
+        A_img = Image.fromarray(data / np.std(data))
         b = -np.load(B_path)
         b = correct_plane(b)
-        B_img = Image.fromarray(b)
+        B_img = Image.fromarray(b  / np.std(b))
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)
 
