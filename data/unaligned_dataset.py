@@ -73,9 +73,9 @@ class UnalignedDataset(BaseDataset):
         BaseDataset.__init__(self, opt)
         self.dir_A = os.path.join(opt.dataroot, opt.phase + "A")  # create a path '/path/to/data/trainA'
         self.dir_B = os.path.join(opt.dataroot, opt.phase + "B")  # create a path '/path/to/data/trainB'
-        with h5py.File('/home/psdl/Workspace/SUNDAE_GAN/Master_Dataset_v1.h5', 'r') as f:
+        with h5py.File('/home/psdl/Workspace/HS-AFM-UPSCALER/Master_Dataset_v2.h5', 'r') as f:
             self.uids = list(f.keys())
-        self.file = h5py.File('/home/psdl/Workspace/SUNDAE_GAN/Master_Dataset_v1.h5', 'r')
+        self.file = h5py.File('/home/psdl/Workspace/HS-AFM-UPSCALER/Master_Dataset_v2.h5', 'r')
 
         self.A_paths = sorted([])  # load images from '/path/to/data/trainA'
         B_paths = sorted(glob.glob('/home/psdl/Workspace/SUNDAE_GAN/Real/*.npy'))  # load images from '/path/to/data/trainB'
