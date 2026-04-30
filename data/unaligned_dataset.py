@@ -121,7 +121,8 @@ class UnalignedDataset(BaseDataset):
         B_path = self.B_paths[index_B]
         uid = self.uids[index % self.A_size]
         group = self.file[uid]
-        data = group['norm'][:]
+        data = group['mask'][:]
+        data = cv2.resize(data, (120, 120), interpolation=cv2.INTER_LINEAR)
         # data = data - np.mean(data)
         # data = data / (np.std(data) + 1e-8)
         A_img = Image.fromarray(data)
