@@ -105,6 +105,7 @@ class UnalignedDataset(BaseDataset):
 
         # A: HR simulation data at 4x crop_size (e.g. 256x256)
         hr_crop = opt.crop_size * 4
+        print(hr_crop)
         transform_A_list = [T.RandomCrop(hr_crop)]
         if not opt.no_flip:
             transform_A_list.append(T.RandomHorizontalFlip())
