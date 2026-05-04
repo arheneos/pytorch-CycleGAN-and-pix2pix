@@ -151,7 +151,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         input_nc (int) -- the number of channels in input images
         output_nc (int) -- the number of channels in output images
         ngf (int) -- the number of filters in the last conv layer
-        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 | afm_optimized
+        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 | afm_optimized | sr_4x | down_4x
         norm (str) -- the name of normalization layers used in the network: batch | instance | none
         use_dropout (bool) -- if use dropout layers.
         init_type (str)    -- the name of our initialization method.
@@ -164,6 +164,10 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
 
     if netG == "resnet_9blocks" or netG == "afm_optimized":
         net = OptimizedAFMGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
+    elif netG == "sr_4x":
+        net = SRGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
+    elif netG == "down_4x":
+        net = DownsampleGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
     elif netG == "resnet_6blocks":
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == "unet_128":
@@ -430,6 +434,159 @@ class OptimizedAFMGenerator(nn.Module):
         x = self.fuse2(x)
 
         return self.final(x)
+
+class SRGenerator(nn.Module):
+    """4x Super-Resolution Generator: LR(64x64) -> HR(256x256).
+    Encoder-bottleneck-decoder (same as OptimizedAFMGenerator) followed by
+    two additional bilinear upsample stages to reach 4x the input size.
+    """
+    def __init__(self, in_channels=1, out_channels=1, ngf=64, n_blocks=9):
+        super(SRGenerator, self).__init__()
+
+        self.begin = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(in_channels, ngf, 7, bias=True),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+        self.down1 = nn.Sequential(
+            nn.Conv2d(ngf, ngf * 2, 3, stride=2, padding=1, bias=True),
+            nn.InstanceNorm2d(ngf * 2),
+            nn.ReLU(True)
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(ngf * 2, ngf * 4, 3, stride=2, padding=1, bias=True),
+            nn.InstanceNorm2d(ngf * 4),
+            nn.ReLU(True)
+        )
+        self.bottleneck = nn.Sequential(*[ResBlockPlain(ngf * 4) for _ in range(n_blocks)])
+
+        # Decoder back to LR size with skip connections
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.fuse1 = nn.Sequential(
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 4 + ngf * 2, ngf * 2, 3, bias=True),
+            nn.InstanceNorm2d(ngf * 2),
+            nn.ReLU(True)
+        )
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.fuse2 = nn.Sequential(
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 2 + ngf, ngf, 3, bias=True),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+
+        # SR upsample: LR size → 2x → 4x (no encoder skips here)
+        self.up3 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf, ngf, 3, bias=True),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+        self.up4 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf, ngf // 2, 3, bias=True),
+            nn.InstanceNorm2d(ngf // 2),
+            nn.ReLU(True)
+        )
+        self.final = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(ngf // 2, out_channels, 7),
+        )
+
+    def forward(self, x):
+        s0 = self.begin(x)
+        s1 = self.down1(s0)
+        x = self.down2(s1)
+        x = self.bottleneck(x)
+
+        x = self.up1(x)
+        x = self.fuse1(torch.cat([x, s1], dim=1))
+        x = self.up2(x)
+        x = self.fuse2(torch.cat([x, s0], dim=1))
+
+        x = self.up3(x)
+        x = self.up4(x)
+        return self.final(x)
+
+
+class DownsampleGenerator(nn.Module):
+    """4x Downscale Generator: HR(256x256) -> LR(64x64).
+    Two stride-2 convolutions reduce the input by 4x before passing through
+    the same encoder-bottleneck-decoder structure as OptimizedAFMGenerator,
+    which outputs at the reduced (LR) size.
+    """
+    def __init__(self, in_channels=1, out_channels=1, ngf=64, n_blocks=9):
+        super(DownsampleGenerator, self).__init__()
+
+        # 4x spatial reduction: 256 -> 128 -> 64
+        self.pre_down1 = nn.Sequential(
+            nn.Conv2d(in_channels, ngf // 2, 3, stride=2, padding=1, bias=True),
+            nn.InstanceNorm2d(ngf // 2),
+            nn.ReLU(True)
+        )
+        self.pre_down2 = nn.Sequential(
+            nn.Conv2d(ngf // 2, ngf, 3, stride=2, padding=1, bias=True),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+
+        # Same structure as OptimizedAFMGenerator from here (operates at LR size)
+        self.begin = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(ngf, ngf, 7, bias=True),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+        self.down1 = nn.Sequential(
+            nn.Conv2d(ngf, ngf * 2, 3, stride=2, padding=1, bias=True),
+            nn.InstanceNorm2d(ngf * 2),
+            nn.ReLU(True)
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(ngf * 2, ngf * 4, 3, stride=2, padding=1, bias=True),
+            nn.InstanceNorm2d(ngf * 4),
+            nn.ReLU(True)
+        )
+        self.bottleneck = nn.Sequential(*[ResBlockPlain(ngf * 4) for _ in range(n_blocks)])
+
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.fuse1 = nn.Sequential(
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 4 + ngf * 2, ngf * 2, 3, bias=True),
+            nn.InstanceNorm2d(ngf * 2),
+            nn.ReLU(True)
+        )
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.fuse2 = nn.Sequential(
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 2 + ngf, ngf, 3, bias=True),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True)
+        )
+        self.final = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(ngf, out_channels, 7),
+        )
+
+    def forward(self, x):
+        x = self.pre_down1(x)
+        x = self.pre_down2(x)
+
+        s0 = self.begin(x)
+        s1 = self.down1(s0)
+        x = self.down2(s1)
+        x = self.bottleneck(x)
+
+        x = self.up1(x)
+        x = self.fuse1(torch.cat([x, s1], dim=1))
+        x = self.up2(x)
+        x = self.fuse2(torch.cat([x, s0], dim=1))
+        return self.final(x)
+
 
 class GANLoss(nn.Module):
     """Define different GAN objectives.

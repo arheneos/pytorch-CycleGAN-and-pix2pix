@@ -26,31 +26,25 @@ class CycleGANModel(BaseModel):
     def modify_commandline_options(parser, is_train=True):
         """Add new dataset-specific options, and rewrite default values for existing options.
 
-        Parameters:
-            parser          -- original option parser
-            is_train (bool) -- whether training phase or test phase. You can use this flag to add training-specific or test-specific options.
-
-        Returns:
-            the modified parser.
-
-        For CycleGAN, in addition to GAN losses, we introduce lambda_A, lambda_B, and lambda_identity for the following losses.
-        A (source domain), B (target domain).
-        Generators: G_A: A -> B; G_B: B -> A.
-        Discriminators: D_A: G_A(A) vs. B; D_B: G_B(B) vs. A.
-        Forward cycle loss:  lambda_A * ||G_B(G_A(A)) - A|| (Eqn. (2) in the paper)
-        Backward cycle loss: lambda_B * ||G_A(G_B(B)) - B|| (Eqn. (2) in the paper)
-        Identity loss (optional): lambda_identity * (||G_A(B) - B|| * lambda_B + ||G_B(A) - A|| * lambda_A) (Sec 5.2 "Photo generation from paintings" in the paper)
-        Dropout is not used in the original CycleGAN paper.
+        A domain: HR simulation data (256x256), from group['mask'][:] in HDF5.
+        B domain: LR real AFM data (64x64), from .npy files.
+        G_A (down_4x): HR sim (256) -> LR real-style (64)
+        G_B (sr_4x):   LR real (64) -> HR sim-style (256)  <-- the upscaler
+        Identity loss is disabled (asymmetric sizes make it ill-defined).
         """
-        parser.set_defaults(no_dropout=True)  # default CycleGAN did not use dropout
+        parser.set_defaults(no_dropout=True)
+        parser.add_argument("--netG_A", type=str, default="down_4x",
+                            help="Generator A architecture (HR->LR): down_4x | afm_optimized | ...")
+        parser.add_argument("--netG_B", type=str, default="sr_4x",
+                            help="Generator B architecture (LR->HR): sr_4x | afm_optimized | ...")
         if is_train:
             parser.add_argument("--lambda_A", type=float, default=10.0, help="weight for cycle loss (A -> B -> A)")
             parser.add_argument("--lambda_B", type=float, default=10.0, help="weight for cycle loss (B -> A -> B)")
             parser.add_argument(
                 "--lambda_identity",
                 type=float,
-                default=0.5,
-                help="use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1",
+                default=0.0,
+                help="Identity loss weight. Must be 0 for asymmetric SR setup (A and B have different sizes).",
             )
 
         return parser
@@ -62,12 +56,14 @@ class CycleGANModel(BaseModel):
             opt (Option class)-- stores all the experiment flags; needs to be a subclass of BaseOptions
         """
         BaseModel.__init__(self, opt)
-        # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "D_B", "G_B", "cycle_B", "idt_B"]
-        # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
+        use_idt = self.isTrain and opt.lambda_identity > 0.0
+        if use_idt:
+            self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "D_B", "G_B", "cycle_B", "idt_B"]
+        else:
+            self.loss_names = ["D_A", "G_A", "cycle_A", "D_B", "G_B", "cycle_B"]
         visual_names_A = ["real_A", "fake_B", "rec_A"]
         visual_names_B = ["real_B", "fake_A", "rec_B"]
-        if self.isTrain and self.opt.lambda_identity > 0.0:  # if identity loss is used, we also visualize idt_B=G_A(B) ad idt_A=G_B(A)
+        if use_idt:
             visual_names_A.append("idt_B")
             visual_names_B.append("idt_A")
 
@@ -78,23 +74,26 @@ class CycleGANModel(BaseModel):
         else:  # during test time, only load Gs
             self.model_names = ["G_A", "G_B"]
 
-        # define networks (both Generators and discriminators)
-        # The naming is different from those used in the paper.
-        # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
-        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm, not opt.no_dropout,
+        # G_A: HR sim (256) -> LR real-style (64)
+        # G_B: LR real (64) -> HR sim-style (256)  <-- the upscaler
+        netG_A = getattr(opt, "netG_A", opt.netG)
+        netG_B = getattr(opt, "netG_B", opt.netG)
+        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, netG_A, opt.norm, not opt.no_dropout,
                                         opt.init_type, opt.init_gain)
-        self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm, not opt.no_dropout,
+        self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, netG_B, opt.norm, not opt.no_dropout,
                                         opt.init_type, opt.init_gain)
 
         if self.isTrain:  # define discriminators
+            # D_A: real_B (LR 64) vs fake_B (LR 64)
             self.netD_A = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.norm, opt.init_type,
                                             opt.init_gain)
+            # D_B: real_A (HR 256) vs fake_A (HR 256)
             self.netD_B = networks.define_D(opt.input_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.norm, opt.init_type,
                                             opt.init_gain)
 
         if self.isTrain:
-            if opt.lambda_identity > 0.0:  # only works when input and output images have the same number of channels
-                assert opt.input_nc == opt.output_nc
+            if opt.lambda_identity > 0.0:
+                raise ValueError("lambda_identity must be 0 for the asymmetric SR setup (A=HR 256, B=LR 64).")
             self.fake_A_pool = ImagePool(opt.pool_size)  # create image buffer to store previously generated images
             self.fake_B_pool = ImagePool(opt.pool_size)  # create image buffer to store previously generated images
             # define loss functions
