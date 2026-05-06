@@ -474,7 +474,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         input_nc (int) -- the number of channels in input images
         output_nc (int) -- the number of channels in output images
         ngf (int) -- the number of filters in the last conv layer
-        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 | afm_optimized | sr_4x | down_4x
+        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 | afm_optimized | sr_4x | sr_4x_attn | down_4x
         norm (str) -- the name of normalization layers used in the network: batch | instance | none
         use_dropout (bool) -- if use dropout layers.
         init_type (str)    -- the name of our initialization method.
@@ -488,10 +488,9 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
     if netG == "resnet_9blocks" or netG == "afm_optimized":
         net = OptimizedAFMGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
     elif netG == "sr_4x":
-        # net = SRGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
-        filename = "/home/psdl/Workspace/HS-AFM-UPSCALER/config/node0/config.yaml"
-        config = yaml.load(open(filename, "r").read(), CLoader)
-        net = PIDSwinModel(config)
+        net = SRGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
+    elif netG == "sr_4x_attn":
+        net = SRAttnGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
     elif netG == "down_4x":
         net = DownsampleGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
     elif netG == "resnet_6blocks":
@@ -843,6 +842,130 @@ class SRGenerator(nn.Module):
 
         x = self.up3(x)
         x = self.up4(x)
+        return self.final(x)
+
+
+class RCAB(nn.Module):
+    """Residual Channel Attention Block (RCAN-style): conv-IN-ReLU-conv-IN + ECA, residual."""
+
+    def __init__(self, dim, norm_layer=nn.InstanceNorm2d):
+        super(RCAB, self).__init__()
+        self.body = nn.Sequential(
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(dim, dim, 3, bias=True),
+            norm_layer(dim),
+            nn.ReLU(True),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(dim, dim, 3, bias=True),
+            norm_layer(dim),
+        )
+        self.eca = ECABlock(dim)
+
+    def forward(self, x):
+        return x + self.eca(self.body(x))
+
+
+class SRAttnGenerator(nn.Module):
+    """Attention-style 4x Super-Resolution Generator: LR(64x64) -> HR(256x256).
+
+    Same encoder-bottleneck-decoder + 2x SR upsample skeleton as SRGenerator,
+    but reinterpreted with attention:
+      * Bottleneck uses RCAB (residual + ECA channel attention) and a
+        SelfAttention2d block for non-local global context.
+      * Decoder fuse stages and the SR upsample stages are followed by CBAM
+        (channel + spatial attention) so high-frequency details are gated
+        before the final projection.
+    """
+
+    def __init__(self, in_channels=1, out_channels=1, ngf=64, n_blocks=9, n_attn=1):
+        super(SRAttnGenerator, self).__init__()
+
+        self.begin = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(in_channels, ngf, 7, bias=True),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True),
+        )
+        self.down1 = nn.Sequential(
+            nn.Conv2d(ngf, ngf * 2, 3, stride=2, padding=1, bias=True),
+            nn.InstanceNorm2d(ngf * 2),
+            nn.ReLU(True),
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(ngf * 2, ngf * 4, 3, stride=2, padding=1, bias=True),
+            nn.InstanceNorm2d(ngf * 4),
+            nn.ReLU(True),
+        )
+
+        # Bottleneck: RCABs interleaved with non-local self-attention(s)
+        body = [RCAB(ngf * 4) for _ in range(n_blocks)]
+        if n_attn > 0:
+            mid = len(body) // 2
+            for i in range(n_attn):
+                body.insert(mid + i, SelfAttention2d(ngf * 4))
+        self.bottleneck = nn.Sequential(*body)
+
+        # Decoder back to LR size with skip connections + CBAM gating
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.fuse1 = nn.Sequential(
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 4 + ngf * 2, ngf * 2, 3, bias=True),
+            nn.InstanceNorm2d(ngf * 2),
+            nn.ReLU(True),
+        )
+        self.attn1 = CBAMBlock(ngf * 2)
+
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.fuse2 = nn.Sequential(
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 2 + ngf, ngf, 3, bias=True),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True),
+        )
+        self.attn2 = CBAMBlock(ngf)
+
+        # SR upsample: LR size → 2x → 4x with attention refinement (no encoder skips)
+        self.up3 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf, ngf, 3, bias=True),
+            nn.InstanceNorm2d(ngf),
+            nn.ReLU(True),
+        )
+        self.attn3 = CBAMBlock(ngf)
+
+        self.up4 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf, ngf // 2, 3, bias=True),
+            nn.InstanceNorm2d(ngf // 2),
+            nn.ReLU(True),
+        )
+        self.attn4 = CBAMBlock(ngf // 2)
+
+        self.final = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(ngf // 2, out_channels, 7),
+        )
+
+    def forward(self, x):
+        s0 = self.begin(x)
+        s1 = self.down1(s0)
+        x = self.down2(s1)
+        x = self.bottleneck(x)
+
+        x = self.up1(x)
+        x = self.fuse1(torch.cat([x, s1], dim=1))
+        x = self.attn1(x)
+
+        x = self.up2(x)
+        x = self.fuse2(torch.cat([x, s0], dim=1))
+        x = self.attn2(x)
+
+        x = self.up3(x)
+        x = self.attn3(x)
+        x = self.up4(x)
+        x = self.attn4(x)
         return self.final(x)
 
 
