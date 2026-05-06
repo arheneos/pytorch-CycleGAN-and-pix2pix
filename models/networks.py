@@ -357,12 +357,13 @@ class DynamicPatchEmbedWithRoPE(nn.Module):
         self.patch_size = patch_size
         self.embed_dim = embed_dim
         self.proj = nn.Linear(patch_size * patch_size * in_chans, embed_dim)
-        self.proj.apply(init_weights_kaiming)
 
     def forward(self, x):
         # x: [B, 1, H, W]
         # pid_signal: [B, 2, H, SimColSize] (optional, else returns None)
-        unfold = torch.nn.Unfold(kernel_size=self.patch_size, stride=max(self.patch_size // 8, 1))
+        pad = self.patch_size // 2
+        x = torch.nn.functional.pad(x, (pad, pad, pad, pad), mode='replicate')
+        unfold = torch.nn.Unfold(kernel_size=self.patch_size, stride=1)
         patches = unfold(x)  # [B, C*K*K, N_patches]
         patches = patches.transpose(1, 2)  # [B, N_patches, C*K*K]
         x_embed = self.proj(patches)  # [B, N_patches, embed_dim]
@@ -371,24 +372,21 @@ class DynamicPatchEmbedWithRoPE(nn.Module):
         # --- Patch position info for PID/pos% ---
         B, N_patches, _ = x_embed.shape
         H, W = x.shape[2], x.shape[3]
-        stride = max(self.patch_size // 8, 1)
-        n_x = (W - self.patch_size) // stride + 1
-        n_y = (H - self.patch_size) // stride + 1
-        # Vectorized center positions
+        stride = 1
+        n_x = (W - self.patch_size) // stride + 1  # == orig W
+        n_y = (H - self.patch_size) // stride + 1  # == orig H
+        # Vectorized center positions (patch_cols/rows are original-space indices 0..n-1)
         patch_rows = torch.arange(n_y, device=x.device).repeat_interleave(n_x)
         patch_cols = torch.arange(n_x, device=x.device).repeat(n_y)
-        y_centers = patch_rows * stride + self.patch_size // 2  # [N_patches]
-        x_centers = patch_cols * stride + self.patch_size // 2  # [N_patches]
+        y_centers = patch_rows * stride + pad  # padded-space row index
 
         # Broadcast to batch dimension
         y_centers = y_centers.unsqueeze(0).expand(B, -1)  # [B, N_patches]
-        x_centers = x_centers.unsqueeze(0).expand(B, -1)  # [B, N_patches]
-        pos_percents = x_centers.float() / float(W - 1)  # [B, N_patches]
-        pos_percents = pos_percents.unsqueeze(-1)  # [B, N_patches, 1]
+        pos_percents = patch_cols.float() / float(max(n_x - 1, 1))  # [N_patches] 0..1
+        pos_percents = pos_percents.unsqueeze(0).expand(B, -1).unsqueeze(-1)  # [B, N_patches, 1]
         y_idx = y_centers.clamp(max=H - 1).long()  # [B, N_patches]
         pid_inputs = []
         for b in range(B):
-            # x[b, 0, y, :] : shape [N_patches, W]
             rowvals = x[b, 0, y_idx[b], :]  # [N_patches, W]
             pid_inputs.append(rowvals)  # [N_patches, 1, W]
         pid_inputs = torch.stack(pid_inputs, dim=0)  # [B, N_patches, 1, W]
