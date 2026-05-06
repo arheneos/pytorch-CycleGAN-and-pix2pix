@@ -135,7 +135,7 @@ class UnalignedDataset(BaseDataset):
         data = group['mask'][:]
         # data = cv2.resize(data, (120, 120), interpolation=cv2.INTER_LINEAR)
         # data = data - np.mean(data)
-        # data = data / (np.std(data) + 1e-8)
+        data = data / (np.std(data) + 1e-8)
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
         b = correct_plane(b)
