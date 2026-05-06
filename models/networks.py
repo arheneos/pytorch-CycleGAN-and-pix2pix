@@ -274,62 +274,43 @@ class ResidualUNetBlock(nn.Module):
         return out
 
 
-class DynamicPatchEmbedWithRoPE(nn.Module):
-    def __init__(self, patch_size=9, in_chans=1, embed_dim=64):
+class UltraLightPatchCrossAttentionBlock(nn.Module):
+    def __init__(self, dim, mlp_ratio=2.0, drop_path=0.2):
         super().__init__()
-        self.patch_size = patch_size
-        self.embed_dim = embed_dim
-        self.proj = nn.Linear(patch_size * patch_size * in_chans, embed_dim)
+        # Patch feature → Q, K, V (but Q, K = x_patch, V = concat[x_patch, cond])
+        self.norm = nn.LayerNorm(dim)
+        self.qk = nn.Linear(dim, dim * 2, bias=True)
+        self.v_cond = nn.Linear(dim * 2, dim, bias=True)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.gamma = nn.Parameter(1e-4 * torch.ones(dim))  # LayerScale
 
-    def forward(self, x):
-        # x: [B, 1, H, W]
-        # pid_signal: [B, 2, H, SimColSize] (optional, else returns None)
-        pad = self.patch_size // 2
-        x = torch.nn.functional.pad(x, (pad, pad, pad, pad), mode='replicate')
-        unfold = torch.nn.Unfold(kernel_size=self.patch_size, stride=1)
-        patches = unfold(x)  # [B, C*K*K, N_patches]
-        patches = patches.transpose(1, 2)  # [B, N_patches, C*K*K]
-        x_embed = self.proj(patches)  # [B, N_patches, embed_dim]
-        x_embed = self.apply_rope(x_embed)  # [B, N_patches, embed_dim]
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, int(dim * mlp_ratio)),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(int(dim * mlp_ratio), dim),
+            nn.Dropout(0.2),
+        )
+        self.qk.apply(init_weights_kaiming)
+        self.v_cond.apply(init_weights_kaiming)
+        self.mlp.apply(init_weights_kaiming)
 
-        # --- Patch position info for PID/pos% ---
-        B, N_patches, _ = x_embed.shape
-        H, W = x.shape[2], x.shape[3]
-        stride = 1
-        n_x = (W - self.patch_size) // stride + 1  # == orig W
-        n_y = (H - self.patch_size) // stride + 1  # == orig H
-        # Vectorized center positions (patch_cols/rows are original-space indices 0..n-1)
-        patch_rows = torch.arange(n_y, device=x.device).repeat_interleave(n_x)
-        patch_cols = torch.arange(n_x, device=x.device).repeat(n_y)
-        y_centers = patch_rows * stride + pad  # padded-space row index
+    def forward(self, x_patch, cond_patch):
+        # x_patch: [B, N, C]
+        # cond_patch: [B, N, cond_dim]  (PID + pos%)
+        B, N, C = x_patch.shape
+        norm_x = self.norm(x_patch)
+        qk = self.qk(norm_x)  # [B, N, 2C]
+        q, k = qk.chunk(2, dim=-1)  # [B, N, C], [B, N, C]
+        # Attention scores per patch (so this is just an elementwise gating)
+        attn = (q * k).sum(-1, keepdim=True) / math.sqrt(C)  # [B, N, 1]
+        attn = attn.sigmoid()  # Soft gating, [0,1]
 
-        # Broadcast to batch dimension
-        y_centers = y_centers.unsqueeze(0).expand(B, -1)  # [B, N_patches]
-        pos_percents = patch_cols.float() / float(max(n_x - 1, 1))  # [N_patches] 0..1
-        pos_percents = pos_percents.unsqueeze(0).expand(B, -1).unsqueeze(-1)  # [B, N_patches, 1]
-        y_idx = y_centers.clamp(max=H - 1).long()  # [B, N_patches]
-        pid_inputs = []
-        for b in range(B):
-            rowvals = x[b, 0, y_idx[b], :]  # [N_patches, W]
-            pid_inputs.append(rowvals)  # [N_patches, 1, W]
-        pid_inputs = torch.stack(pid_inputs, dim=0)  # [B, N_patches, 1, W]
-        return (x_embed, pid_inputs, pos_percents, n_x, n_y)
-
-    def apply_rope(self, x):
-        B, N, D = x.shape
-        half_dim = D // 2
-        freq_seq = torch.arange(half_dim, dtype=torch.float32, device=x.device)
-        inv_freq = 1.0 / (10000 ** (freq_seq / half_dim))  # [half_dim]
-        pos = torch.arange(N, dtype=torch.float32, device=x.device)  # [N]
-        sinusoid = torch.einsum('n,d->nd', pos, inv_freq)  # [N, half_dim]
-        sin = torch.sin(sinusoid)
-        cos = torch.cos(sinusoid)
-        sin = sin.unsqueeze(0).repeat(B, 1, 1)  # [B, N, half_dim]
-        cos = cos.unsqueeze(0).repeat(B, 1, 1)
-        x1, x2 = x[..., :half_dim], x[..., half_dim:]
-        x_rotated = torch.cat([x1 * cos - x2 * sin,
-                               x1 * sin + x2 * cos], dim=-1)
-        return x_rotated
+        v_input = torch.cat([x_patch, cond_patch], dim=-1)
+        v = self.v_cond(v_input)  # 3364x256 and 192x128
+        out = x_patch + self.drop_path(self.gamma * attn * v)
+        out = out + self.drop_path(self.mlp(out))
+        return out
 
 
 class PIDConvWithRoPE(nn.Module):
@@ -338,36 +319,15 @@ class PIDConvWithRoPE(nn.Module):
         self.seq_len = seq_len
         self.output_dim = output_dim
 
-        # Conv1D: (B, C_in, N) -> (B, C_out, N)
-        self.project = nn.Conv1d(in_channels=input_channels, out_channels=output_dim,
-                                 kernel_size=3, padding=1)
-
-        # 1D Sequence Refinement before pooling
-        self.attn_conv = nn.Sequential(
-            nn.Conv1d(output_dim, output_dim, kernel_size=5, padding=2,
-                      groups=output_dim),
-            nn.GELU(),
-            nn.Conv1d(output_dim, output_dim, kernel_size=1)
-        )
-
-        # Attention map for weighted pooling across sequence
-        self.pool_weights = nn.Conv1d(output_dim, 1, kernel_size=1)
+        # Conv1D: (B, C_in, N) → (B, C_out, N)
+        self.project = nn.Conv1d(in_channels=input_channels, out_channels=output_dim, kernel_size=3, padding=1)
 
     def forward(self, x):
         # x: [B, 2, N] or [B*N, 2, W]
         x = self.project(x)  # [B, C, N] or [B*N, C, W]
-
-        # Refine sequence features
-        x = x + self.attn_conv(x)
-
         x = x.permute(0, 2, 1)  # [B, N, C] or [B*N, W, C]
         x = self.apply_rope(x)  # [B, N, C] or [B*N, W, C]
-        x = x.permute(0, 2, 1)  # Back to [B*N, C, W] for weighted pool
-
-        # Attention Pooling instead of simple mean
-        weights = torch.softmax(self.pool_weights(x), dim=-1)  # [B*N, 1, W]
-        x = (x * weights).sum(dim=-1)  # [B*N, C]
-
+        x = x.mean(dim=1)  # [B, C] or [B*N, C]
         return x
 
     def apply_rope(self, x):
@@ -391,6 +351,77 @@ class PIDConvWithRoPE(nn.Module):
         return x_rope
 
 
+class DynamicPatchEmbedWithRoPE(nn.Module):
+    def __init__(self, patch_size=9, in_chans=1, embed_dim=64):
+        super().__init__()
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        self.proj = nn.Linear(patch_size * patch_size * in_chans, embed_dim)
+        self.proj.apply(init_weights_kaiming)
+
+    def forward(self, x):
+        # x: [B, 1, H, W]
+        # pid_signal: [B, 2, H, SimColSize] (optional, else returns None)
+        unfold = torch.nn.Unfold(kernel_size=self.patch_size, stride=max(self.patch_size // 8, 1))
+        patches = unfold(x)  # [B, C*K*K, N_patches]
+        patches = patches.transpose(1, 2)  # [B, N_patches, C*K*K]
+        x_embed = self.proj(patches)  # [B, N_patches, embed_dim]
+        x_embed = self.apply_rope(x_embed)  # [B, N_patches, embed_dim]
+
+        # --- Patch position info for PID/pos% ---
+        B, N_patches, _ = x_embed.shape
+        H, W = x.shape[2], x.shape[3]
+        stride = max(self.patch_size // 8, 1)
+        n_x = (W - self.patch_size) // stride + 1
+        n_y = (H - self.patch_size) // stride + 1
+        # Vectorized center positions
+        patch_rows = torch.arange(n_y, device=x.device).repeat_interleave(n_x)
+        patch_cols = torch.arange(n_x, device=x.device).repeat(n_y)
+        y_centers = patch_rows * stride + self.patch_size // 2  # [N_patches]
+        x_centers = patch_cols * stride + self.patch_size // 2  # [N_patches]
+
+        # Broadcast to batch dimension
+        y_centers = y_centers.unsqueeze(0).expand(B, -1)  # [B, N_patches]
+        x_centers = x_centers.unsqueeze(0).expand(B, -1)  # [B, N_patches]
+        pos_percents = x_centers.float() / float(W - 1)  # [B, N_patches]
+        pos_percents = pos_percents.unsqueeze(-1)  # [B, N_patches, 1]
+        y_idx = y_centers.clamp(max=H - 1).long()  # [B, N_patches]
+        pid_inputs = []
+        for b in range(B):
+            # x[b, 0, y, :] : shape [N_patches, W]
+            rowvals = x[b, 0, y_idx[b], :]  # [N_patches, W]
+            pid_inputs.append(rowvals)  # [N_patches, 1, W]
+        pid_inputs = torch.stack(pid_inputs, dim=0)  # [B, N_patches, 1, W]
+        return (x_embed, pid_inputs, pos_percents, n_x, n_y)
+
+    def apply_rope(self, x):
+        B, N, D = x.shape
+        half_dim = D // 2
+        freq_seq = torch.arange(half_dim, dtype=torch.float32, device=x.device)
+        inv_freq = 1.0 / (10000 ** (freq_seq / half_dim))  # [half_dim]
+        pos = torch.arange(N, dtype=torch.float32, device=x.device)  # [N]
+        sinusoid = torch.einsum('n,d->nd', pos, inv_freq)  # [N, half_dim]
+        sin = torch.sin(sinusoid)
+        cos = torch.cos(sinusoid)
+        sin = sin.unsqueeze(0).repeat(B, 1, 1)  # [B, N, half_dim]
+        cos = cos.unsqueeze(0).repeat(B, 1, 1)
+        x1, x2 = x[..., :half_dim], x[..., half_dim:]
+        x_rotated = torch.cat([x1 * cos - x2 * sin,
+                               x1 * sin + x2 * cos], dim=-1)
+        return x_rotated
+
+
+def reconstruct_from_patches(z_output, H_patch, W_patch, depth=32):
+    # z_output: [B, N * Depth, ph, pw]
+    B, N, ph, pw = z_output.shape
+    assert N == H_patch * W_patch * depth, f"Patch 수 불일치: {N} vs {H_patch}x{W_patch}x{depth}"
+
+    z = z_output.view(B, H_patch, W_patch, ph, pw, depth)
+    z = z.permute(0, 5, 1, 3, 2, 4)  # [B, depth, H_patch, W_patch, ph, pw]
+    z = z.contiguous().view(B, depth, H_patch * ph, W_patch * pw)
+    return z
+
+
 class PIDSwinModel(nn.Module):
     def __init__(self, config: dict):
         super().__init__()
@@ -401,28 +432,13 @@ class PIDSwinModel(nn.Module):
         self.patch_embed = DynamicPatchEmbedWithRoPE(patch_size, 1, embed_dim)
         self.pid_encoder = PIDConvWithRoPE(input_channels=2, output_dim=embed_dim)
         self.blocks = nn.ModuleList([
-            WindowedCrossAttentionBlock(
-                embed_dim,
-                num_heads=int(config['model'].get('num_heads', 8)),
-                window_size=int(config['model'].get('window_size', 8)),
-                mlp_ratio=float(config['model'].get('mlp_ratio', 4.0)),
-                drop_path=0.1,
-            )
+            UltraLightPatchCrossAttentionBlock(embed_dim)
             for _ in range(config['model']['block_repeat'])
         ])
-        # Conv + PixelShuffle upsampler. The previous per-patch Linear produced
-        # each 4x4 output tile from a single patch embedding with no spatial
-        # mixing across neighbors, leading to tile-boundary discontinuities
-        # that the residual stack then had to wash out. Conv-based upsampling
-        # mixes adjacent patch positions before sub-pixel rearrangement, which
-        # is the standard SR pattern.
         self.upsample = nn.Sequential(
-            nn.Conv2d(embed_dim, embed_dim * 2, kernel_size=3, padding=1,
-                      padding_mode='reflect'),
+            nn.Linear(embed_dim, embed_dim * 2),
             nn.GELU(),
-            nn.Conv2d(embed_dim * 2, depth * 16, kernel_size=3, padding=1,
-                      padding_mode='reflect'),
-            nn.PixelShuffle(4),
+            nn.Linear(embed_dim * 2, 16 * depth),  # 4x4 patch = 16
         )
         if config['model']['conv']['embed']:
             self.out = nn.Sequential(
@@ -433,6 +449,7 @@ class PIDSwinModel(nn.Module):
                 nn.Conv2d(config['model']['conv']['depth'], 1, kernel_size=config['model']['conv']['k_size'],
                           padding='same', padding_mode='reflect')
             )
+            self.out.apply(init_weights_kaiming)
         else:
             self.out = nn.Identity()
 
@@ -445,15 +462,11 @@ class PIDSwinModel(nn.Module):
         cond_input = cond_input.view(B * N, 2, W)
         cond_patch = self.pid_encoder(cond_input).view(B, N, -1)  # [B, N, cond_dim]
         for single in self.blocks:
-            x = single(x, cond_patch, ny, nx)
-        # Reshape patch tokens [B, N, embed_dim] back to spatial [B, embed_dim, ny, nx]
-        # so the conv layers in `self.upsample` can mix adjacent patch positions.
-        x = x.transpose(1, 2).reshape(B, -1, ny, nx)
-        z = self.upsample(x)  # [B, depth, ny*4, nx*4]
-        # for single in self.residual:
-        #     z = single(z)
+            x = single(x, cond_patch)
+        z_output = self.upsample(x)  # [B, N, 16]
+        z_output = z_output.view(x.size(0), -1, 4, 4)
+        z = reconstruct_from_patches(z_output, ny, nx, self.depth)
         return self.out(z)
-
 
 
 def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, init_type="normal", init_gain=0.02):
@@ -531,6 +544,7 @@ def robust_log_l1_loss(pred, target):
     s_target = torch.sign(target) * torch.log1p(torch.abs(target))
     return F.mse_loss(s_pred, s_target)
 
+
 ##############################################################################
 # Classes
 ##############################################################################
@@ -541,14 +555,15 @@ class MultiscaleAFMDiscriminator(nn.Module):
     fine-grained noise/texture and larger structural artifacts (like scan lines).
     Uses Spectral Normalization for stability.
     """
+
     def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.InstanceNorm2d, num_D=2):
         super(MultiscaleAFMDiscriminator, self).__init__()
         self.num_D = num_D
-        
+
         for i in range(num_D):
             netD = NLayerDiscriminatorOptimized(input_nc, ndf, n_layers, norm_layer)
             setattr(self, f"layer{i}", netD)
-            
+
         self.downsample = nn.AvgPool2d(3, stride=2, padding=[1, 1], count_include_pad=False)
 
     def forward(self, input):
@@ -567,14 +582,14 @@ class NLayerDiscriminatorOptimized(nn.Module):
 
     def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.InstanceNorm2d):
         super(NLayerDiscriminatorOptimized, self).__init__()
-        
+
         kw = 4
         padw = 1
         sequence = [
-            spectral_norm(nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw)), 
+            spectral_norm(nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw)),
             nn.LeakyReLU(0.2, True)
         ]
-        
+
         nf_mult = 1
         nf_mult_prev = 1
         for n in range(1, n_layers):
@@ -582,7 +597,7 @@ class NLayerDiscriminatorOptimized(nn.Module):
             nf_mult = min(2 ** n, 8)
             sequence += [
                 spectral_norm(nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw)),
-                norm_layer(ndf * nf_mult), 
+                norm_layer(ndf * nf_mult),
                 nn.LeakyReLU(0.2, True)
             ]
 
@@ -590,7 +605,7 @@ class NLayerDiscriminatorOptimized(nn.Module):
         nf_mult = min(2 ** n_layers, 8)
         sequence += [
             spectral_norm(nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw)),
-            norm_layer(ndf * nf_mult), 
+            norm_layer(ndf * nf_mult),
             nn.LeakyReLU(0.2, True)
         ]
 
@@ -620,7 +635,7 @@ class StructuralLoss(nn.Module):
         # AFM 데이터 특성상 정규화가 중요함
         img1_norm = (torch.tanh(img1) + 1.0) / 2.0
         img2_norm = (torch.tanh(img2) + 1.0) / 2.0
-        
+
         # ssim은 [0, 1] 범위에서 동작
         loss_ssim = 1 - ssim(img1_norm, img2_norm, data_range=1.0, size_average=True)
         loss_l1 = self.l1(img1, img2)
@@ -632,6 +647,7 @@ class StructuralLoss(nn.Module):
 ##############################################################################
 class ECABlock(nn.Module):
     """Efficient Channel Attention module"""
+
     def __init__(self, channels, b=1, gamma=2):
         super(ECABlock, self).__init__()
         kernel_size = int(abs((math.log(channels, 2) + b) / gamma))
@@ -649,6 +665,7 @@ class ECABlock(nn.Module):
 
 class ResBlockPlain(nn.Module):
     """Simple ResNet block without Spectral Norm or Attention to avoid artifacts."""
+
     def __init__(self, dim, norm_layer=nn.InstanceNorm2d, use_dropout=False):
         super(ResBlockPlain, self).__init__()
         conv_block = [
@@ -676,9 +693,10 @@ class OptimizedAFMGenerator(nn.Module):
     Uses Bilinear Upsampling + Conv instead of PixelShuffle.
     Avoids Spectral Norm and Attention in the Generator to prevent periodic artifacts.
     """
+
     def __init__(self, in_channels=1, out_channels=1, ngf=64, n_blocks=9):
         super(OptimizedAFMGenerator, self).__init__()
-        
+
         # Initial Stem
         self.begin = nn.Sequential(
             nn.ReflectionPad2d(3),
@@ -750,11 +768,13 @@ class OptimizedAFMGenerator(nn.Module):
 
         return self.final(x)
 
+
 class SRGenerator(nn.Module):
     """4x Super-Resolution Generator: LR(64x64) -> HR(256x256).
     Encoder-bottleneck-decoder (same as OptimizedAFMGenerator) followed by
     two additional bilinear upsample stages to reach 4x the input size.
     """
+
     def __init__(self, in_channels=1, out_channels=1, ngf=64, n_blocks=9):
         super(SRGenerator, self).__init__()
 
@@ -834,6 +854,7 @@ class DownsampleGenerator(nn.Module):
     the same encoder-bottleneck-decoder structure as OptimizedAFMGenerator,
     which outputs at the reduced (LR) size.
     """
+
     def __init__(self, in_channels=1, out_channels=1, ngf=64, n_blocks=9):
         super(DownsampleGenerator, self).__init__()
 
