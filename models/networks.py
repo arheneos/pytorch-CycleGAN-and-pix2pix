@@ -7,6 +7,9 @@ import math
 import torch.nn.functional as F
 from torch.nn.utils.spectral_norm import spectral_norm
 from pytorch_msssim import ssim, ms_ssim
+from timm.models.layers import DropPath
+import yaml
+from yaml import CLoader
 
 
 ###############################################################################
@@ -144,6 +147,322 @@ def init_net(net, init_type="normal", init_gain=0.02):
     return net
 
 
+class WindowedCrossAttentionBlock(nn.Module):
+    """Pre-LN block with windowed multi-head self-attention and FiLM conditioning.
+
+    Two design choices target the gradient-starvation observed in the prior
+    `UltraLightPatchCrossAttentionBlock`:
+
+    1. Replace per-patch scalar sigmoid gate with multi-head softmax attention
+       inside non-overlapping windows. Each block then performs real spatial
+       reasoning across patches — no longer an identity-like passthrough.
+    2. Inject the conditioning signal via FiLM (per-channel scale + shift) on
+       the LayerNorm'd input. This gives `cond_patch` a direct gradient path
+       into every block, rather than the previous bottleneck through one
+       scalar dot-product gate.
+
+    LayerScale init at 1.0 keeps both residual branches live from step 1.
+    FiLM weights init at 0 → block starts as pure self-attention; conditioning
+    influence ramps up as gradients update the FiLM projection.
+    """
+
+    def __init__(self, dim, num_heads=4, window_size=8, mlp_ratio=2.0, drop_path=0.1):
+        super().__init__()
+        if dim % num_heads != 0:
+            raise ValueError(f"dim={dim} must be divisible by num_heads={num_heads}")
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+        self.window_size = window_size
+
+        self.norm1 = nn.LayerNorm(dim)
+        self.qkv = nn.Linear(dim, dim * 3, bias=True)
+        self.proj = nn.Linear(dim, dim)
+
+        self.film_norm = nn.LayerNorm(dim)
+        self.film = nn.Linear(dim, dim * 2)
+        # Small random init (not zero) so gradient flows from x's path back
+        # through cond → pid_encoder from step 1. With std=0.02 and fan_in=dim,
+        # initial (scale, shift) is ~N(0, 0.02²·dim) → mild ~±0.16 modulation;
+        # block stays close to identity-attention but cond is wired up.
+        nn.init.normal_(self.film.weight, std=0.02)
+        nn.init.zeros_(self.film.bias)
+
+        self.norm2 = nn.LayerNorm(dim)
+        hidden = int(dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, dim),
+        )
+
+        self.layer_scale_1 = nn.Parameter(torch.ones(dim))
+        self.layer_scale_2 = nn.Parameter(torch.ones(dim))
+        self.drop_path = DropPath(drop_path) if drop_path > 0 else nn.Identity()
+
+    def forward(self, x, cond, ny, nx):
+        # x:    [B, N, C], N = ny*nx (row-major)
+        # cond: [B, N, C]
+        scale, shift = self.film(self.film_norm(cond)).chunk(2, dim=-1)
+        x_norm = self.norm1(x) * (1.0 + scale) + shift
+        x_attn = self._windowed_attention(x_norm, ny, nx)
+        x = x + self.drop_path(self.layer_scale_1 * x_attn)
+        x = x + self.drop_path(self.layer_scale_2 * self.mlp(self.norm2(x)))
+        return x
+
+    def _windowed_attention(self, x, ny, nx):
+        ws = self.window_size
+        B, N, C = x.shape
+        pad_h = (ws - ny % ws) % ws
+        pad_w = (ws - nx % ws) % ws
+        x_2d = x.view(B, ny, nx, C)
+        if pad_h or pad_w:
+            x_2d = F.pad(x_2d, (0, 0, 0, pad_w, 0, pad_h))
+        ny_p, nx_p = ny + pad_h, nx + pad_w
+
+        x_w = (
+            x_2d.view(B, ny_p // ws, ws, nx_p // ws, ws, C)
+            .permute(0, 1, 3, 2, 4, 5).contiguous()
+            .view(-1, ws * ws, C)
+        )
+
+        Bw, Nw, _ = x_w.shape
+        qkv = (
+            self.qkv(x_w)
+            .view(Bw, Nw, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        out = (attn @ v).transpose(1, 2).contiguous().view(Bw, Nw, C)
+        out = self.proj(out)
+
+        out = (
+            out.view(B, ny_p // ws, nx_p // ws, ws, ws, C)
+            .permute(0, 1, 3, 2, 4, 5).contiguous()
+            .view(B, ny_p, nx_p, C)
+        )
+        if pad_h or pad_w:
+            out = out[:, :ny, :nx, :]
+        return out.reshape(B, N, C)
+
+
+class ResidualUNetBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, downsample=False, upsample=False):
+        super().__init__()
+        self.downsample = downsample
+        self.upsample = upsample
+
+        stride = 2 if self.downsample else 1
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=7, stride=stride, padding=3,
+                               padding_mode='reflect')
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=7, padding='same', padding_mode='reflect')
+        self.relu = nn.LeakyReLU(0.2, inplace=True)
+        self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                              stride=stride,
+                              padding=0) if in_channels != out_channels or self.downsample else nn.Identity()
+
+    def forward(self, x):
+        identity = self.skip(x)
+        x = self.relu(self.conv1(x))
+        x = self.conv2(x)
+        out = self.relu(x + identity)
+        if self.upsample:
+            out = F.interpolate(out, scale_factor=2.0, mode='bilinear', align_corners=False)
+        return out
+
+
+class DynamicPatchEmbedWithRoPE(nn.Module):
+    def __init__(self, patch_size=9, in_chans=1, embed_dim=64):
+        super().__init__()
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        self.proj = nn.Linear(patch_size * patch_size * in_chans, embed_dim)
+
+    def forward(self, x):
+        # x: [B, 1, H, W]
+        # pid_signal: [B, 2, H, SimColSize] (optional, else returns None)
+        pad = self.patch_size // 2
+        x = torch.nn.functional.pad(x, (pad, pad, pad, pad), mode='replicate')
+        unfold = torch.nn.Unfold(kernel_size=self.patch_size, stride=1)
+        patches = unfold(x)  # [B, C*K*K, N_patches]
+        patches = patches.transpose(1, 2)  # [B, N_patches, C*K*K]
+        x_embed = self.proj(patches)  # [B, N_patches, embed_dim]
+        x_embed = self.apply_rope(x_embed)  # [B, N_patches, embed_dim]
+
+        # --- Patch position info for PID/pos% ---
+        B, N_patches, _ = x_embed.shape
+        H, W = x.shape[2], x.shape[3]
+        stride = 1
+        n_x = (W - self.patch_size) // stride + 1  # == orig W
+        n_y = (H - self.patch_size) // stride + 1  # == orig H
+        # Vectorized center positions (patch_cols/rows are original-space indices 0..n-1)
+        patch_rows = torch.arange(n_y, device=x.device).repeat_interleave(n_x)
+        patch_cols = torch.arange(n_x, device=x.device).repeat(n_y)
+        y_centers = patch_rows * stride + pad  # padded-space row index
+
+        # Broadcast to batch dimension
+        y_centers = y_centers.unsqueeze(0).expand(B, -1)  # [B, N_patches]
+        pos_percents = patch_cols.float() / float(max(n_x - 1, 1))  # [N_patches] 0..1
+        pos_percents = pos_percents.unsqueeze(0).expand(B, -1).unsqueeze(-1)  # [B, N_patches, 1]
+        y_idx = y_centers.clamp(max=H - 1).long()  # [B, N_patches]
+        pid_inputs = []
+        for b in range(B):
+            rowvals = x[b, 0, y_idx[b], :]  # [N_patches, W]
+            pid_inputs.append(rowvals)  # [N_patches, 1, W]
+        pid_inputs = torch.stack(pid_inputs, dim=0)  # [B, N_patches, 1, W]
+        return (x_embed, pid_inputs, pos_percents, n_x, n_y)
+
+    def apply_rope(self, x):
+        B, N, D = x.shape
+        half_dim = D // 2
+        freq_seq = torch.arange(half_dim, dtype=torch.float32, device=x.device)
+        inv_freq = 1.0 / (10000 ** (freq_seq / half_dim))  # [half_dim]
+        pos = torch.arange(N, dtype=torch.float32, device=x.device)  # [N]
+        sinusoid = torch.einsum('n,d->nd', pos, inv_freq)  # [N, half_dim]
+        sin = torch.sin(sinusoid)
+        cos = torch.cos(sinusoid)
+        sin = sin.unsqueeze(0).repeat(B, 1, 1)  # [B, N, half_dim]
+        cos = cos.unsqueeze(0).repeat(B, 1, 1)
+        x1, x2 = x[..., :half_dim], x[..., half_dim:]
+        x_rotated = torch.cat([x1 * cos - x2 * sin,
+                               x1 * sin + x2 * cos], dim=-1)
+        return x_rotated
+
+
+class PIDConvWithRoPE(nn.Module):
+    def __init__(self, input_channels=2, output_dim=64, seq_len=400):
+        super().__init__()
+        self.seq_len = seq_len
+        self.output_dim = output_dim
+
+        # Conv1D: (B, C_in, N) -> (B, C_out, N)
+        self.project = nn.Conv1d(in_channels=input_channels, out_channels=output_dim,
+                                 kernel_size=3, padding=1)
+
+        # 1D Sequence Refinement before pooling
+        self.attn_conv = nn.Sequential(
+            nn.Conv1d(output_dim, output_dim, kernel_size=5, padding=2,
+                      groups=output_dim),
+            nn.GELU(),
+            nn.Conv1d(output_dim, output_dim, kernel_size=1)
+        )
+
+        # Attention map for weighted pooling across sequence
+        self.pool_weights = nn.Conv1d(output_dim, 1, kernel_size=1)
+
+    def forward(self, x):
+        # x: [B, 2, N] or [B*N, 2, W]
+        x = self.project(x)  # [B, C, N] or [B*N, C, W]
+
+        # Refine sequence features
+        x = x + self.attn_conv(x)
+
+        x = x.permute(0, 2, 1)  # [B, N, C] or [B*N, W, C]
+        x = self.apply_rope(x)  # [B, N, C] or [B*N, W, C]
+        x = x.permute(0, 2, 1)  # Back to [B*N, C, W] for weighted pool
+
+        # Attention Pooling instead of simple mean
+        weights = torch.softmax(self.pool_weights(x), dim=-1)  # [B*N, 1, W]
+        x = (x * weights).sum(dim=-1)  # [B*N, C]
+
+        return x
+
+    def apply_rope(self, x):
+        # RoPE on last dim (C)
+        B, N, C = x.size()
+        assert C % 2 == 0, "C must be even for RoPE"
+
+        # Positional indices [0...N-1]
+        pos = torch.arange(N, device=x.device).unsqueeze(1)  # [N, 1]
+        dim = torch.arange(C // 2, device=x.device).unsqueeze(0)  # [1, C//2]
+
+        theta = 1000 ** (-2 * dim / C)
+        angles = pos * theta  # [N, C//2]
+
+        sin_embed = torch.sin(angles).unsqueeze(0).repeat(B, 1, 1)  # [B, N, C//2]
+        cos_embed = torch.cos(angles).unsqueeze(0).repeat(B, 1, 1)
+
+        x1, x2 = x[..., ::2], x[..., 1::2]  # Interleaved split
+        x_rope = torch.cat([x1 * cos_embed - x2 * sin_embed,
+                            x1 * sin_embed + x2 * cos_embed], dim=-1)
+        return x_rope
+
+
+class PIDSwinModel(nn.Module):
+    def __init__(self, config: dict):
+        super().__init__()
+        depth = config['model']['conv']['depth']
+        patch_size = config['model']['patch_size']
+        embed_dim = config['model']['embed_dim']
+        self.depth = depth
+        self.patch_embed = DynamicPatchEmbedWithRoPE(patch_size, 1, embed_dim)
+        self.pid_encoder = PIDConvWithRoPE(input_channels=2, output_dim=embed_dim)
+        self.blocks = nn.ModuleList([
+            WindowedCrossAttentionBlock(
+                embed_dim,
+                num_heads=int(config['model'].get('num_heads', 4)),
+                window_size=int(config['model'].get('window_size', 8)),
+                mlp_ratio=float(config['model'].get('mlp_ratio', 2.0)),
+                drop_path=0.1,
+            )
+            for _ in range(config['model']['block_repeat'])
+        ])
+        # Conv + PixelShuffle upsampler. The previous per-patch Linear produced
+        # each 4x4 output tile from a single patch embedding with no spatial
+        # mixing across neighbors, leading to tile-boundary discontinuities
+        # that the residual stack then had to wash out. Conv-based upsampling
+        # mixes adjacent patch positions before sub-pixel rearrangement, which
+        # is the standard SR pattern.
+        self.upsample = nn.Sequential(
+            nn.Conv2d(embed_dim, embed_dim * 2, kernel_size=3, padding=1,
+                      padding_mode='reflect'),
+            nn.GELU(),
+            nn.Conv2d(embed_dim * 2, depth * 16, kernel_size=3, padding=1,
+                      padding_mode='reflect'),
+            nn.PixelShuffle(4),
+        )
+        if config['model']['conv']['embed']:
+            self.residual = nn.ModuleList([ResidualUNetBlock(
+                config['model']['residual']['layers'][i],
+                config['model']['residual']['layers'][i + 1] if i < (
+                        len(config['model']['residual']['layers']) - 1) else depth,
+                config['model']['residual']['downsample'],
+                config['model']['residual']['upsample'],
+            ) for i in range(len(config['model']['residual']['layers']))])
+            self.out = nn.Sequential(
+                nn.LeakyReLU(0.2),
+                nn.Conv2d(depth, config['model']['conv']['depth'], kernel_size=config['model']['conv']['k_size'],
+                          padding='same', padding_mode='reflect'),
+                nn.LeakyReLU(0.2),
+                nn.Conv2d(config['model']['conv']['depth'], 1, kernel_size=config['model']['conv']['k_size'],
+                          padding='same', padding_mode='reflect')
+            )
+        else:
+            self.out = nn.Identity()
+
+    def forward(self, img):
+        x, pid_patch, pos_patch, nx, ny = self.patch_embed(img)
+        B, N, W = pid_patch.shape
+        pos_patch_expand = pos_patch.expand(-1, -1, W)  # [B, N, W]
+        cond_input = torch.cat([pid_patch, pos_patch_expand], dim=2)  # [B, 841, 128]
+        cond_input = cond_input.unsqueeze(2)
+        cond_input = cond_input.view(B * N, 2, W)
+        cond_patch = self.pid_encoder(cond_input).view(B, N, -1)  # [B, N, cond_dim]
+        for single in self.blocks:
+            x = single(x, cond_patch, ny, nx)
+        # Reshape patch tokens [B, N, embed_dim] back to spatial [B, embed_dim, ny, nx]
+        # so the conv layers in `self.upsample` can mix adjacent patch positions.
+        x = x.transpose(1, 2).reshape(B, -1, ny, nx)
+        z = self.upsample(x)  # [B, depth, ny*4, nx*4]
+        for single in self.residual:
+            z = single(z)
+        return self.out(z)
+
+
+
 def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, init_type="normal", init_gain=0.02):
     """Create a generator
 
@@ -165,7 +484,10 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
     if netG == "resnet_9blocks" or netG == "afm_optimized":
         net = OptimizedAFMGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
     elif netG == "sr_4x":
-        net = SRGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
+        # net = SRGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
+        filename = "/home/psdl/Workspace/HS-AFM-UPSCALER/config/node0/config.yaml"
+        config = yaml.load(open(filename, "r").read(), CLoader)
+        net = PIDSwinModel(config)
     elif netG == "down_4x":
         net = DownsampleGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
     elif netG == "resnet_6blocks":
