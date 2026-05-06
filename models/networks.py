@@ -403,7 +403,7 @@ class PIDSwinModel(nn.Module):
         self.blocks = nn.ModuleList([
             WindowedCrossAttentionBlock(
                 embed_dim,
-                num_heads=int(config['model'].get('num_heads', 4)),
+                num_heads=int(config['model'].get('num_heads', 8)),
                 window_size=int(config['model'].get('window_size', 8)),
                 mlp_ratio=float(config['model'].get('mlp_ratio', 2.0)),
                 drop_path=0.1,
@@ -425,13 +425,6 @@ class PIDSwinModel(nn.Module):
             nn.PixelShuffle(4),
         )
         if config['model']['conv']['embed']:
-            self.residual = nn.ModuleList([ResidualUNetBlock(
-                config['model']['residual']['layers'][i],
-                config['model']['residual']['layers'][i + 1] if i < (
-                        len(config['model']['residual']['layers']) - 1) else depth,
-                config['model']['residual']['downsample'],
-                config['model']['residual']['upsample'],
-            ) for i in range(len(config['model']['residual']['layers']))])
             self.out = nn.Sequential(
                 nn.LeakyReLU(0.2),
                 nn.Conv2d(depth, config['model']['conv']['depth'], kernel_size=config['model']['conv']['k_size'],
