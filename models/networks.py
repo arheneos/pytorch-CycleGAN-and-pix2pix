@@ -450,8 +450,6 @@ class PIDSwinModel(nn.Module):
         # so the conv layers in `self.upsample` can mix adjacent patch positions.
         x = x.transpose(1, 2).reshape(B, -1, ny, nx)
         z = self.upsample(x)  # [B, depth, ny*4, nx*4]
-        for single in self.residual:
-            z = single(z)
         return self.out(z)
 
 
