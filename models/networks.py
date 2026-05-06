@@ -425,13 +425,6 @@ class PIDSwinModel(nn.Module):
             nn.PixelShuffle(4),
         )
         if config['model']['conv']['embed']:
-            self.residual = nn.ModuleList([ResidualUNetBlock(
-                config['model']['residual']['layers'][i],
-                config['model']['residual']['layers'][i + 1] if i < (
-                        len(config['model']['residual']['layers']) - 1) else depth,
-                config['model']['residual']['downsample'],
-                config['model']['residual']['upsample'],
-            ) for i in range(len(config['model']['residual']['layers']))])
             self.out = nn.Sequential(
                 nn.LeakyReLU(0.2),
                 nn.Conv2d(depth, config['model']['conv']['depth'], kernel_size=config['model']['conv']['k_size'],
@@ -457,8 +450,8 @@ class PIDSwinModel(nn.Module):
         # so the conv layers in `self.upsample` can mix adjacent patch positions.
         x = x.transpose(1, 2).reshape(B, -1, ny, nx)
         z = self.upsample(x)  # [B, depth, ny*4, nx*4]
-        for single in self.residual:
-            z = single(z)
+        # for single in self.residual:
+        #     z = single(z)
         return self.out(z)
 
 
