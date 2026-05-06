@@ -405,7 +405,7 @@ class PIDSwinModel(nn.Module):
                 embed_dim,
                 num_heads=int(config['model'].get('num_heads', 8)),
                 window_size=int(config['model'].get('window_size', 8)),
-                mlp_ratio=float(config['model'].get('mlp_ratio', 2.0)),
+                mlp_ratio=float(config['model'].get('mlp_ratio', 4.0)),
                 drop_path=0.1,
             )
             for _ in range(config['model']['block_repeat'])
