@@ -43,7 +43,7 @@ class CycleGANModel(BaseModel):
             parser.add_argument(
                 "--lambda_identity",
                 type=float,
-                default=0.0,
+                default=1.0,
                 help="Identity loss weight. Must be 0 for asymmetric SR setup (A and B have different sizes).",
             )
 
