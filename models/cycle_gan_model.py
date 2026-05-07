@@ -43,7 +43,7 @@ class CycleGANModel(BaseModel):
             parser.add_argument(
                 "--lambda_identity",
                 type=float,
-                default=1.0,
+                default=0.0,
                 help="Identity loss weight. Must be 0 for asymmetric SR setup (A and B have different sizes).",
             )
 
@@ -258,8 +258,8 @@ class CycleGANModel(BaseModel):
         self.backward_D_A()
         self.backward_D_B()
 
-        torch.nn.utils.clip_grad_norm_(self.netD_A.parameters(), max_norm=0.25)
-        torch.nn.utils.clip_grad_norm_(self.netD_B.parameters(), max_norm=0.25)
+        torch.nn.utils.clip_grad_norm_(self.netD_A.parameters(), max_norm=0.5)
+        torch.nn.utils.clip_grad_norm_(self.netD_B.parameters(), max_norm=0.5)
         self.optimizer_D.step()
 
     def _clear_tensors(self):
