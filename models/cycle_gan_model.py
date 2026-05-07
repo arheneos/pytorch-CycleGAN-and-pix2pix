@@ -35,7 +35,7 @@ class CycleGANModel(BaseModel):
         parser.set_defaults(no_dropout=True)
         parser.add_argument("--netG_A", type=str, default="down_4x",
                             help="Generator A architecture (HR->LR): down_4x | afm_optimized | ...")
-        parser.add_argument("--netG_B", type=str, default="sr_4x",
+        parser.add_argument("--netG_B", type=str, default="sr_4x_attn",
                             help="Generator B architecture (LR->HR): sr_4x | afm_optimized | ...")
         if is_train:
             parser.add_argument("--lambda_A", type=float, default=10.0, help="weight for cycle loss (A -> B -> A)")
