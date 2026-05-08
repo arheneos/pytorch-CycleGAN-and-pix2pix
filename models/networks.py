@@ -474,7 +474,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         input_nc (int) -- the number of channels in input images
         output_nc (int) -- the number of channels in output images
         ngf (int) -- the number of filters in the last conv layer
-        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 | afm_optimized | sr_4x | sr_4x_attn | down_4x
+        netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 | afm_optimized | sr_4x | sr_4x_attn | sr_4x_restormer | sr_4x_swinir | down_4x
         norm (str) -- the name of normalization layers used in the network: batch | instance | none
         use_dropout (bool) -- if use dropout layers.
         init_type (str)    -- the name of our initialization method.
@@ -491,6 +491,10 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         net = SRGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
     elif netG == "sr_4x_attn":
         net = SRAttnGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
+    elif netG == "sr_4x_restormer":
+        net = SRRestormerGenerator(input_nc, output_nc, ngf=ngf)
+    elif netG == "sr_4x_swinir":
+        net = SRSwinIRGenerator(input_nc, output_nc, ngf=ngf)
     elif netG == "down_4x":
         net = DownsampleGenerator(input_nc, output_nc, ngf=ngf, n_blocks=9)
     elif netG == "resnet_6blocks":
@@ -967,6 +971,518 @@ class SRAttnGenerator(nn.Module):
         x = self.up4(x)
         x = self.attn4(x)
         return self.final(x)
+
+
+# ---------------------------------------------------------------------------
+# Restormer building blocks (Zamir et al., CVPR 2022)
+# https://arxiv.org/abs/2111.09881
+# ---------------------------------------------------------------------------
+
+
+class LayerNorm2d(nn.Module):
+    """BiasFree LayerNorm over the channel dim of a 4D feature map.
+    Equivalent to nn.LayerNorm applied on (B, H, W, C) then permuted back.
+    """
+
+    def __init__(self, num_channels, eps=1e-6):
+        super(LayerNorm2d, self).__init__()
+        self.weight = nn.Parameter(torch.ones(num_channels))
+        self.eps = eps
+
+    def forward(self, x):
+        # variance along channel dim (BiasFree: no mean subtraction)
+        sigma = x.pow(2).mean(dim=1, keepdim=True).add(self.eps).sqrt()
+        return self.weight.view(1, -1, 1, 1) * (x / sigma)
+
+
+class MDTA(nn.Module):
+    """Multi-Dconv Head Transposed (channel-wise) Attention.
+    Q,K,V are produced by 1x1 conv + 3x3 depthwise conv, then attention is
+    computed over the *channel* axis (so cost is O(C^2) instead of O(N^2)).
+    """
+
+    def __init__(self, dim, num_heads, bias=False):
+        super(MDTA, self).__init__()
+        self.num_heads = num_heads
+        self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
+
+        self.qkv = nn.Conv2d(dim, dim * 3, kernel_size=1, bias=bias)
+        self.qkv_dwconv = nn.Conv2d(dim * 3, dim * 3, kernel_size=3, stride=1,
+                                     padding=1, groups=dim * 3, bias=bias)
+        self.project_out = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        qkv = self.qkv_dwconv(self.qkv(x))
+        q, k, v = qkv.chunk(3, dim=1)
+
+        # (B, heads, C/heads, H*W)
+        head_dim = c // self.num_heads
+        q = q.reshape(b, self.num_heads, head_dim, h * w)
+        k = k.reshape(b, self.num_heads, head_dim, h * w)
+        v = v.reshape(b, self.num_heads, head_dim, h * w)
+
+        q = F.normalize(q, dim=-1)
+        k = F.normalize(k, dim=-1)
+
+        # channel-wise attention: (heads, C/heads, C/heads)
+        attn = (q @ k.transpose(-2, -1)) * self.temperature
+        attn = attn.softmax(dim=-1)
+
+        out = attn @ v  # (B, heads, C/heads, H*W)
+        out = out.reshape(b, c, h, w)
+        return self.project_out(out)
+
+
+class GDFN(nn.Module):
+    """Gated-Dconv Feed-forward Network.
+    Two-branch design: one branch is gated through GELU, then they are
+    multiplied elementwise and projected.
+    """
+
+    def __init__(self, dim, ffn_expansion_factor=2.66, bias=False):
+        super(GDFN, self).__init__()
+        hidden = int(dim * ffn_expansion_factor)
+        self.project_in = nn.Conv2d(dim, hidden * 2, kernel_size=1, bias=bias)
+        self.dwconv = nn.Conv2d(hidden * 2, hidden * 2, kernel_size=3, stride=1,
+                                 padding=1, groups=hidden * 2, bias=bias)
+        self.project_out = nn.Conv2d(hidden, dim, kernel_size=1, bias=bias)
+
+    def forward(self, x):
+        x = self.dwconv(self.project_in(x))
+        x1, x2 = x.chunk(2, dim=1)
+        return self.project_out(F.gelu(x1) * x2)
+
+
+class RestormerBlock(nn.Module):
+    """LN -> MDTA -> residual -> LN -> GDFN -> residual."""
+
+    def __init__(self, dim, num_heads, ffn_expansion_factor=2.66, bias=False):
+        super(RestormerBlock, self).__init__()
+        self.norm1 = LayerNorm2d(dim)
+        self.attn = MDTA(dim, num_heads, bias=bias)
+        self.norm2 = LayerNorm2d(dim)
+        self.ffn = GDFN(dim, ffn_expansion_factor=ffn_expansion_factor, bias=bias)
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x))
+        x = x + self.ffn(self.norm2(x))
+        return x
+
+
+class _PixelDownsample(nn.Module):
+    """Restormer-style downsample: 1x1 conv to halve channels then PixelUnshuffle(2)
+    so spatial halves and channels double overall (dim -> 2*dim, H/2, W/2)."""
+
+    def __init__(self, dim):
+        super(_PixelDownsample, self).__init__()
+        self.body = nn.Sequential(
+            nn.Conv2d(dim, dim // 2, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.PixelUnshuffle(2),
+        )
+
+    def forward(self, x):
+        return self.body(x)
+
+
+class _PixelUpsample(nn.Module):
+    """Restormer-style upsample: 1x1 conv to double channels then PixelShuffle(2)
+    so spatial doubles and channels halve overall (dim -> dim/2, 2H, 2W)."""
+
+    def __init__(self, dim):
+        super(_PixelUpsample, self).__init__()
+        self.body = nn.Sequential(
+            nn.Conv2d(dim, dim * 2, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.PixelShuffle(2),
+        )
+
+    def forward(self, x):
+        return self.body(x)
+
+
+class SRRestormerGenerator(nn.Module):
+    """Restormer-based 4x Super-Resolution Generator: LR(64x64) -> HR(256x256).
+
+    Faithful to the original 4-level Restormer (Zamir et al., 2022) defaults:
+      num_blocks=(4, 6, 6, 8), num_refinement=4, heads=(1, 2, 4, 8),
+      ffn_expansion_factor=2.66.
+    Channel widths: dim, 2*dim, 4*dim, 8*dim across the four encoder levels;
+    decoder L1 (and refinement) operate at 2*dim, matching the paper.
+
+    For LR=64, the four levels run at 64 -> 32 -> 16 -> 8. After the symmetric
+    decoder reaches 64x64 with 2*dim channels, two 3x3 + PixelShuffle(2) stages
+    bring the feature map to 4x the input size before a final projection.
+    """
+
+    def __init__(self, in_channels=1, out_channels=1, ngf=48,
+                 num_blocks=(4, 6, 6, 8), num_refinement=4,
+                 heads=(1, 2, 4, 8), ffn_expansion_factor=2.66, bias=False):
+        super(SRRestormerGenerator, self).__init__()
+        assert len(num_blocks) == 4 and len(heads) == 4, "Restormer expects 4 levels"
+        dim = ngf
+        assert all((dim * (2 ** i)) % heads[i] == 0 for i in range(4)), (
+            f"Each level's channel count must be divisible by its head count "
+            f"(ngf={dim}, heads={heads})"
+        )
+
+        self.patch_embed = nn.Conv2d(in_channels, dim, kernel_size=3, stride=1,
+                                     padding=1, bias=bias)
+
+        # Encoder: 4 levels
+        self.encoder_l1 = nn.Sequential(*[
+            RestormerBlock(dim, heads[0], ffn_expansion_factor, bias)
+            for _ in range(num_blocks[0])
+        ])
+        self.down1_2 = _PixelDownsample(dim)             # dim   -> 2*dim, /2
+        self.encoder_l2 = nn.Sequential(*[
+            RestormerBlock(dim * 2, heads[1], ffn_expansion_factor, bias)
+            for _ in range(num_blocks[1])
+        ])
+        self.down2_3 = _PixelDownsample(dim * 2)         # 2*dim -> 4*dim, /4
+        self.encoder_l3 = nn.Sequential(*[
+            RestormerBlock(dim * 4, heads[2], ffn_expansion_factor, bias)
+            for _ in range(num_blocks[2])
+        ])
+        self.down3_4 = _PixelDownsample(dim * 4)         # 4*dim -> 8*dim, /8
+
+        # Latent (deepest level)
+        self.latent = nn.Sequential(*[
+            RestormerBlock(dim * 8, heads[3], ffn_expansion_factor, bias)
+            for _ in range(num_blocks[3])
+        ])
+
+        # Decoder: symmetric to encoder
+        self.up4_3 = _PixelUpsample(dim * 8)             # 8*dim -> 4*dim, x2
+        self.reduce_chan_l3 = nn.Conv2d(dim * 8, dim * 4, kernel_size=1, bias=bias)
+        self.decoder_l3 = nn.Sequential(*[
+            RestormerBlock(dim * 4, heads[2], ffn_expansion_factor, bias)
+            for _ in range(num_blocks[2])
+        ])
+
+        self.up3_2 = _PixelUpsample(dim * 4)             # 4*dim -> 2*dim, x2
+        self.reduce_chan_l2 = nn.Conv2d(dim * 4, dim * 2, kernel_size=1, bias=bias)
+        self.decoder_l2 = nn.Sequential(*[
+            RestormerBlock(dim * 2, heads[1], ffn_expansion_factor, bias)
+            for _ in range(num_blocks[1])
+        ])
+
+        self.up2_1 = _PixelUpsample(dim * 2)             # 2*dim -> dim,   x2
+        # No channel reduction at level 1 (concat = 2*dim, per the paper)
+        self.decoder_l1 = nn.Sequential(*[
+            RestormerBlock(dim * 2, heads[0], ffn_expansion_factor, bias)
+            for _ in range(num_blocks[0])
+        ])
+        self.refinement = nn.Sequential(*[
+            RestormerBlock(dim * 2, heads[0], ffn_expansion_factor, bias)
+            for _ in range(num_refinement)
+        ])
+
+        # 4x SR upsample (LR -> 2x -> 4x) using PixelShuffle
+        self.sr_up1 = nn.Sequential(
+            nn.Conv2d(dim * 2, dim * 2 * 4, kernel_size=3, stride=1, padding=1, bias=bias),
+            nn.PixelShuffle(2),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.sr_up2 = nn.Sequential(
+            nn.Conv2d(dim * 2, dim * 4, kernel_size=3, stride=1, padding=1, bias=bias),
+            nn.PixelShuffle(2),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+        self.output = nn.Conv2d(dim, out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
+
+    def forward(self, x):
+        x0 = self.patch_embed(x)
+
+        e1 = self.encoder_l1(x0)
+        e2 = self.encoder_l2(self.down1_2(e1))
+        e3 = self.encoder_l3(self.down2_3(e2))
+        z = self.latent(self.down3_4(e3))
+
+        d3 = self.up4_3(z)
+        d3 = self.reduce_chan_l3(torch.cat([d3, e3], dim=1))
+        d3 = self.decoder_l3(d3)
+
+        d2 = self.up3_2(d3)
+        d2 = self.reduce_chan_l2(torch.cat([d2, e2], dim=1))
+        d2 = self.decoder_l2(d2)
+
+        d1 = self.up2_1(d2)
+        d1 = torch.cat([d1, e1], dim=1)  # 2*dim, no reduce
+        d1 = self.decoder_l1(d1)
+        d1 = self.refinement(d1)
+
+        u = self.sr_up1(d1)   # x2
+        u = self.sr_up2(u)    # x4
+        return self.output(u)
+
+
+# ---------------------------------------------------------------------------
+# SwinIR building blocks (Liang et al., ICCVW 2021)
+# https://arxiv.org/abs/2108.10257
+# ---------------------------------------------------------------------------
+
+
+def _window_partition(x, window_size):
+    """(B, H, W, C) -> (B*num_windows, window_size, window_size, C)."""
+    B, H, W, C = x.shape
+    x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
+    return x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
+
+
+def _window_reverse(windows, window_size, H, W):
+    """(B*nW, ws, ws, C) -> (B, H, W, C)."""
+    B = int(windows.shape[0] / (H * W / window_size / window_size))
+    x = windows.view(B, H // window_size, W // window_size, window_size, window_size, -1)
+    return x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
+
+
+class _WindowAttention(nn.Module):
+    """Window-based multi-head self-attention with relative position bias."""
+
+    def __init__(self, dim, window_size, num_heads, qkv_bias=True):
+        super(_WindowAttention, self).__init__()
+        self.dim = dim
+        self.window_size = window_size
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = head_dim ** -0.5
+
+        self.relative_position_bias_table = nn.Parameter(
+            torch.zeros((2 * window_size - 1) ** 2, num_heads)
+        )
+        coords_h = torch.arange(window_size)
+        coords_w = torch.arange(window_size)
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing='ij'))  # 2, ws, ws
+        coords_flat = coords.flatten(1)                                            # 2, N
+        rel = coords_flat[:, :, None] - coords_flat[:, None, :]                    # 2, N, N
+        rel = rel.permute(1, 2, 0).contiguous()
+        rel[:, :, 0] += window_size - 1
+        rel[:, :, 1] += window_size - 1
+        rel[:, :, 0] *= 2 * window_size - 1
+        self.register_buffer("relative_position_index", rel.sum(-1))               # N, N
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.proj = nn.Linear(dim, dim)
+        nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
+
+    def forward(self, x, mask=None):
+        # x: (B*nW, N, C) where N = ws*ws
+        B_, N, C = x.shape
+        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        attn = (q * self.scale) @ k.transpose(-2, -1)
+        bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
+            self.window_size * self.window_size, self.window_size * self.window_size, -1
+        ).permute(2, 0, 1).contiguous()
+        attn = attn + bias.unsqueeze(0)
+
+        if mask is not None:
+            nW = mask.shape[0]
+            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+            attn = attn.view(-1, self.num_heads, N, N)
+        attn = attn.softmax(dim=-1)
+
+        out = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        return self.proj(out)
+
+
+class _SwinMlp(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None):
+        super(_SwinMlp, self).__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+
+    def forward(self, x):
+        return self.fc2(self.act(self.fc1(x)))
+
+
+class _SwinTransformerBlock(nn.Module):
+    """LN -> (S)W-MSA -> residual -> LN -> MLP -> residual."""
+
+    def __init__(self, dim, num_heads, window_size=8, shift_size=0, mlp_ratio=2.0, qkv_bias=True):
+        super(_SwinTransformerBlock, self).__init__()
+        assert 0 <= shift_size < window_size
+        self.dim = dim
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.shift_size = shift_size
+
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = _WindowAttention(dim, window_size, num_heads, qkv_bias=qkv_bias)
+        self.norm2 = nn.LayerNorm(dim)
+        self.mlp = _SwinMlp(dim, int(dim * mlp_ratio))
+
+        self._mask_cache = {}  # (H, W, device) -> attn_mask
+
+    def _get_mask(self, H, W, device):
+        if self.shift_size == 0:
+            return None
+        key = (H, W, device)
+        if key in self._mask_cache:
+            return self._mask_cache[key]
+        img_mask = torch.zeros((1, H, W, 1), device=device)
+        slices = (slice(0, -self.window_size),
+                  slice(-self.window_size, -self.shift_size),
+                  slice(-self.shift_size, None))
+        cnt = 0
+        for h in slices:
+            for w in slices:
+                img_mask[:, h, w, :] = cnt
+                cnt += 1
+        mw = _window_partition(img_mask, self.window_size).view(-1, self.window_size * self.window_size)
+        attn_mask = mw.unsqueeze(1) - mw.unsqueeze(2)
+        attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, 0.0)
+        self._mask_cache[key] = attn_mask
+        return attn_mask
+
+    def forward(self, x, H, W):
+        # x: (B, H*W, C)
+        B, L, C = x.shape
+        shortcut = x
+        x = self.norm1(x).view(B, H, W, C)
+
+        if self.shift_size > 0:
+            shifted = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+        else:
+            shifted = x
+
+        x_windows = _window_partition(shifted, self.window_size).view(
+            -1, self.window_size * self.window_size, C
+        )
+        attn_windows = self.attn(x_windows, mask=self._get_mask(H, W, x.device))
+        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
+        shifted = _window_reverse(attn_windows, self.window_size, H, W)
+
+        if self.shift_size > 0:
+            x = torch.roll(shifted, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+        else:
+            x = shifted
+        x = x.view(B, H * W, C)
+
+        x = shortcut + x
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class _SwinBasicLayer(nn.Module):
+    """A stack of Swin Transformer blocks alternating shift_size 0 / ws//2."""
+
+    def __init__(self, dim, depth, num_heads, window_size, mlp_ratio=2.0, qkv_bias=True):
+        super(_SwinBasicLayer, self).__init__()
+        self.blocks = nn.ModuleList([
+            _SwinTransformerBlock(
+                dim, num_heads, window_size,
+                shift_size=0 if (i % 2 == 0) else window_size // 2,
+                mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
+            )
+            for i in range(depth)
+        ])
+
+    def forward(self, x, H, W):
+        for blk in self.blocks:
+            x = blk(x, H, W)
+        return x
+
+
+class _RSTB(nn.Module):
+    """Residual Swin Transformer Block: BasicLayer + 3x3 Conv + identity skip."""
+
+    def __init__(self, dim, depth, num_heads, window_size, mlp_ratio=2.0, qkv_bias=True):
+        super(_RSTB, self).__init__()
+        self.dim = dim
+        self.residual_group = _SwinBasicLayer(dim, depth, num_heads, window_size, mlp_ratio, qkv_bias)
+        self.conv = nn.Conv2d(dim, dim, kernel_size=3, padding=1)
+
+    def forward(self, x, H, W):
+        # x: (B, H*W, C)
+        shortcut = x
+        x = self.residual_group(x, H, W)
+        B, L, C = x.shape
+        x_2d = x.transpose(1, 2).view(B, C, H, W)
+        x_2d = self.conv(x_2d)
+        x = x_2d.flatten(2).transpose(1, 2)
+        return x + shortcut
+
+
+class SRSwinIRGenerator(nn.Module):
+    """SwinIR-based 4x Super-Resolution Generator: LR(64x64) -> HR(256x256).
+
+    Faithful to Liang et al. (ICCVW 2021), light variant:
+      - 3x3 shallow feature extraction conv
+      - K Residual Swin Transformer Blocks (RSTBs) for deep features
+      - global skip from shallow features after a 3x3 conv
+      - 4x reconstruction: two 3x3 + PixelShuffle(2) stages, then a final 3x3.
+    Window size 8 evenly divides LR=64; inputs whose spatial dims are not
+    multiples of `window_size` are reflect-padded internally and cropped back.
+    """
+
+    def __init__(self, in_channels=1, out_channels=1, ngf=64,
+                 depths=(4, 4, 4, 4), num_heads=(4, 4, 4, 4),
+                 window_size=8, mlp_ratio=2.0, qkv_bias=True):
+        super(SRSwinIRGenerator, self).__init__()
+        assert len(depths) == len(num_heads), "depths and num_heads must align"
+        assert all(ngf % h == 0 for h in num_heads), \
+            f"ngf ({ngf}) must be divisible by every num_heads value {num_heads}"
+        embed_dim = ngf
+        self.window_size = window_size
+        self.scale = 4
+
+        # shallow feature extraction
+        self.conv_first = nn.Conv2d(in_channels, embed_dim, 3, padding=1)
+
+        # deep feature extraction: stack of RSTBs
+        self.layers = nn.ModuleList([
+            _RSTB(embed_dim, depths[i], num_heads[i], window_size, mlp_ratio, qkv_bias)
+            for i in range(len(depths))
+        ])
+        self.norm = nn.LayerNorm(embed_dim)
+        self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, padding=1)
+
+        # 4x reconstruction (two PixelShuffle x2 stages)
+        self.upsample = nn.Sequential(
+            nn.Conv2d(embed_dim, embed_dim * 4, 3, padding=1),
+            nn.PixelShuffle(2),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(embed_dim, embed_dim * 4, 3, padding=1),
+            nn.PixelShuffle(2),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.conv_last = nn.Conv2d(embed_dim, out_channels, 3, padding=1)
+
+    def _pad_to_window(self, x):
+        _, _, h, w = x.shape
+        ws = self.window_size
+        pad_h = (ws - h % ws) % ws
+        pad_w = (ws - w % ws) % ws
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode='reflect')
+        return x, h, w
+
+    def forward(self, x):
+        x, h0, w0 = self._pad_to_window(x)
+
+        feat0 = self.conv_first(x)              # (B, C, H, W)
+        B, C, H, W = feat0.shape
+
+        feat = feat0.flatten(2).transpose(1, 2)  # (B, H*W, C)
+        for layer in self.layers:
+            feat = layer(feat, H, W)
+        feat = self.norm(feat)
+        feat_2d = feat.transpose(1, 2).view(B, C, H, W)
+        feat_2d = self.conv_after_body(feat_2d) + feat0   # global residual
+
+        out = self.upsample(feat_2d)
+        out = self.conv_last(out)
+
+        # crop the corresponding 4x region if the input was padded
+        if out.shape[-2] != h0 * self.scale or out.shape[-1] != w0 * self.scale:
+            out = out[:, :, : h0 * self.scale, : w0 * self.scale]
+        return out
 
 
 class DownsampleGenerator(nn.Module):
