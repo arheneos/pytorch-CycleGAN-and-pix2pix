@@ -10,7 +10,6 @@ import random
 import numpy as np
 import tqdm
 import h5py
-import torchvision.transforms as T
 
 
 def correct_plane(image):
@@ -99,18 +98,8 @@ class UnalignedDataset(BaseDataset):
         btoA = self.opt.direction == "BtoA"
         input_nc = self.opt.output_nc if btoA else self.opt.input_nc  # get the number of channels of input image
         output_nc = self.opt.input_nc if btoA else self.opt.output_nc  # get the number of channels of output image
-
-        # B: LR real AFM data at crop_size (e.g. 64x64)
+        self.transform_A = get_transform(self.opt, grayscale=(input_nc == 1), convert=False)
         self.transform_B = get_transform(self.opt, grayscale=(output_nc == 1), convert=False)
-
-        # A: HR simulation data at 4x crop_size (e.g. 256x256)
-        hr_crop = opt.crop_size * 4
-        print(hr_crop)
-        transform_A_list = [T.RandomCrop(hr_crop)]
-        if not opt.no_flip:
-            transform_A_list.append(T.RandomHorizontalFlip())
-        transform_A_list.append(T.ToTensor())
-        self.transform_A = T.Compose(transform_A_list)
 
     def __getitem__(self, index):
         """Return a data point and its metadata information.
@@ -132,10 +121,9 @@ class UnalignedDataset(BaseDataset):
         B_path = self.B_paths[index_B]
         uid = self.uids[index % self.A_size]
         group = self.file[uid]
-        data = group['mask'][:]
-        # data = cv2.resize(data, (120, 120), interpolation=cv2.INTER_LINEAR)
+        data = group['norm'][:]
         # data = data - np.mean(data)
-        #data = data / (np.std(data) + 1e-8)
+        # data = data / (np.std(data) + 1e-8)
         A_img = Image.fromarray(data)
         b = -np.load(B_path)
         b = correct_plane(b)
